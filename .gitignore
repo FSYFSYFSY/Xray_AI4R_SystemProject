@@ -27,6 +27,7 @@ catkin_ws/src/rplidar_ros/
 # Ignore swp files
 *.swp
 
+mcu_ws/build
 
 # Ignore the "build" and "devel" folder of the ros2_ws
 ros2_ws/build/

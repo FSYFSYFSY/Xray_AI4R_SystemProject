@@ -20,6 +20,8 @@ set(msg_files
   "msg/IntArray.msg"
   "msg/PixelCoordsFloat32.msg"
   "msg/ImagePointsArray.msg"
+  "msg/Imu.msg"
+  "msg/TofSensor.msg"
   #DEPENDENCIES geometry_msgs # Add packages that above messages depend on, in this case geometry_msgs for Sphere.msg
   # etc
   )

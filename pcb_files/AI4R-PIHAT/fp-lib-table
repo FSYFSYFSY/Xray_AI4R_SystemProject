@@ -1,0 +1,5 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "Polulu2801-RCSwitch")(type "KiCad")(uri "${KIPRJMOD}/Component-Libraries/Polulu2801-RCSwitch")(options "")(descr ""))
+  (lib (name "Polulu-PCA9685")(type "KiCad")(uri "${KIPRJMOD}/Component-Libraries/Polulu-PCA9685")(options "")(descr ""))
+)
