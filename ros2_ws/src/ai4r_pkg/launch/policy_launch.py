@@ -12,20 +12,20 @@ def generate_launch_description():
     # Initialise the Launch Description variable
     ld = LaunchDescription()
 
-    # Declare input arguments that this launch file accepts
-    agent_ns_launch_arg = DeclareLaunchArgument(
-        'agent_ns',
-        default_value='agent01'
-    )
+    # # Declare input arguments that this launch file accepts
+    # agent_ns_launch_arg = DeclareLaunchArgument(
+    #     'agent_ns',
+    #     default_value='agent01'
+    # )
 
     # Node launch details
     node=Node(
         package='ai4r_pkg',
-        namespace=LaunchConfiguration('agent_ns'),
+        # namespace=LaunchConfiguration('agent_ns'),
         executable='policy_node.py',
         name='policy_node',
     )
 
-    ld.add_action(agent_ns_launch_arg)
+    # ld.add_action(agent_ns_launch_arg)
     ld.add_action(node)
     return ld

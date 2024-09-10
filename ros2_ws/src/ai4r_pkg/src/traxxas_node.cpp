@@ -1,41 +1,60 @@
 #include "ai4r_pkg/traxxas_node.hpp"
 
-// Static Global Variables
-static uint16_t steering_set_point = STEERING_NEUTRAL_PULSE_WIDTH;
-static uint16_t last_steering_command = STEERING_NEUTRAL_PULSE_WIDTH;
-static uint16_t esc_set_point = ESC_NEUTRAL_PULSE_WIDTH;
-
 class TraxxasNode : public rclcpp::Node {
     public:
         TraxxasNode() : Node("traxxas_node") {
-            servo_pulse_width_sub_ = this->create_subscription<ai4r_interfaces::msg::ServoPulseWidth>(
-                "servo_pulse_width", rclcpp::QoS(10), std::bind(&TraxxasNode::servoSubscriberCallback, this, std::placeholders::_1)
+            // Declare parameters with default values (which are used if traxxas_node_params.yaml is not loaded on node startup)
+            // this->declare_parameter("steering_neutral_pulse_width", DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH);
+            // this->declare_parameter("esc_neutral_pulse_width", DEFAULT_ESC_NEUTRAL_PULSE_WIDTH);
+            this->declare_parameter("steering_pulse_width_step", DEFAULT_STEERING_PULSE_WIDTH_STEP);
+            this->declare_parameter("esc_pulse_width_step", DEFAULT_ESC_PULSE_WIDTH_STEP);
+            this->declare_parameter("neutral_esc_required_to_enable", true);
+            this->declare_parameter("action_timeout_can_disable", true);
+            this->declare_parameter("cv_status_can_disable", true);
+
+            // Get parameter values and store in class variables
+            // steering_neutral_pulse_width_ = this->get_parameter("steering_neutral_pulse_width").as_int();
+            // esc_neutral_pulse_width_ = this->get_parameter("esc_neutral_pulse_width").as_int();
+            steering_pulse_width_step_ = this->get_parameter("steering_pulse_width_step").as_int();
+            esc_pulse_width_step_ = this->get_parameter("esc_pulse_width_step").as_int();
+            neutral_esc_required_to_enable_ = this->get_parameter("neutral_esc_required_to_enable").as_bool();
+            action_timeout_can_disable_ = this->get_parameter("action_timeout_can_disable").as_bool();
+            cv_status_can_disable_ = this->get_parameter("cv_status_can_disable").as_bool();
+
+            // Parameter callback
+            callback_handle_ = this->add_on_set_parameters_callback(std::bind(&TraxxasNode::parametersCallback, this, std::placeholders::_1));
+
+            // Subscription to the ESC and steering percentage set point action
+            esc_and_steering_set_point_percent_action_sub_ = this->create_subscription<ai4r_interfaces::msg::EscAndSteeringPercent>(
+                "esc_and_steering_set_point_percent_action", rclcpp::QoS(10), std::bind(&TraxxasNode::escAndSteeringSetPointPercentActionSubscriberCallback, this, std::placeholders::_1)
             );
-            steering_set_point_percent_sub_ = this->create_subscription<std_msgs::msg::Float32>(
-                "steering_set_point_percent", rclcpp::QoS(10), std::bind(&TraxxasNode::steeringSetPointPercentSubscriberCallback, this, std::placeholders::_1)
+            // Subscription to the request command
+            request_sub_ = this->create_subscription<std_msgs::msg::UInt8>(
+                "request", rclcpp::QoS(10), std::bind(&TraxxasNode::requestSubscriberCallback, this, std::placeholders::_1)
             );
-            esc_set_point_percent_sub_ = this->create_subscription<std_msgs::msg::Float32>(
-                "esc_set_point_percent", rclcpp::QoS(10), std::bind(&TraxxasNode::escSetPointPercentSubscriberCallback, this, std::placeholders::_1)
+            // Subscription to the CV status
+            cv_status_sub_ = this->create_subscription<std_msgs::msg::UInt8>(
+                "cv_status", rclcpp::QoS(10), std::bind(&TraxxasNode::cvStatusSubscriberCallback, this, std::placeholders::_1)
             );
-            esc_and_steering_set_point_percent_sub_ = this->create_subscription<ai4r_interfaces::msg::EscAndSteering>(
-                "esc_and_steering_set_point_percent", rclcpp::QoS(10), std::bind(&TraxxasNode::escAndSteeringSetPointPercentSubscriberCallback, this, std::placeholders::_1)
+            // Subscription to the steering trim increment/decrement (negative values are anticlockwise)
+            steering_trim_increment_sub_ = this->create_subscription<std_msgs::msg::Int16>(
+                "steering_trim_increment", rclcpp::QoS(10), std::bind(&TraxxasNode::steeringTrimIncrementSubscriberCallback, this, std::placeholders::_1)
             );
-            estop_sub_ = this->create_subscription<std_msgs::msg::UInt16>(
-                "estop", rclcpp::QoS(10), std::bind(&TraxxasNode::estopSubscriberCallback, this, std::placeholders::_1)
-            );
-            line_detector_timeout_sub_ = this->create_subscription<std_msgs::msg::Bool>(
-                "line_detector_timeout_flag", rclcpp::QoS(10), std::bind(&TraxxasNode::lineDetectorTimeoutCallback, this, std::placeholders::_1)
+            // Subscription to the steering trim set (negative values are anticlockwise)
+            steering_trim_set_sub_ = this->create_subscription<std_msgs::msg::Int16>(
+                "steering_trim_set", rclcpp::QoS(10), std::bind(&TraxxasNode::steeringTrimSetSubscriberCallback, this, std::placeholders::_1)
             );
 
             // Publisher for the FSM state
-            state_publisher_ = this->create_publisher<std_msgs::msg::String>("traxxas_state", 10);
+            state_publisher_ = this->create_publisher<std_msgs::msg::String>("traxxas_state", 1000);
+            // Publishers for the latest ESC and steering pulse width commands sent to the motors
+            current_esc_pulse_width_publisher_ = this->create_publisher<std_msgs::msg::UInt16>("traxxas_esc_current_pulse_width", 1000);
+            current_steering_pulse_width_publisher_ = this->create_publisher<std_msgs::msg::UInt16>("traxxas_steering_current_pulse_width", 1000);
+            // Publisher for the latest steering trim
+            current_steering_trim_pulse_width_publisher_ = this->create_publisher<std_msgs::msg::UInt16>("traxxas_steering_trim_current_pulse_width", 10);
 
-            // Publisher for the current i2c commands
-            current_esc_pulse_width_publisher_ = this->create_publisher<ai4r_interfaces::msg::ServoPulseWidth>("traxxas_esc_current_pulse_width", 10);
-            current_steering_pulse_width_publisher_ = this->create_publisher<ai4r_interfaces::msg::ServoPulseWidth>("traxxas_steering_current_pulse_width", 10);
-
-            // 100 Hz (same rate as servo board)
-            timer_ = this->create_wall_timer(10ms, std::bind(&TraxxasNode::timer_callback, this));
+            // Timer callback for the synchronous FSM
+            timer_ = this->create_wall_timer(std::chrono::milliseconds(TRAXXAS_FSM_CYCLE_PERIOD_IN_MILLISECS), std::bind(&TraxxasNode::timerCallback, this));
 
             // Open the I2C device
             // > Note that the I2C driver is already instantiated
@@ -67,172 +86,306 @@ class TraxxasNode : public rclcpp::Node {
         }
 
     private:
-        // Private variables
-        State currentState = State::Enabled;    // State initially Enabled
-        int estop = ESTOP_ENABLE; // Store last estop command (initially ENABLE) possibly change to enable_disable_request
+        int steering_trim = 0;  // Steering neutral pulse width offset
+        // int steering_set_point = steering_neutral_pulse_width_;    // Steering target pulse width
+        int steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;    // Steering target pulse width
+        // int latest_steering_command = steering_neutral_pulse_width_;     // Latest steering pulse width command sent to the servo
+        int latest_steering_command = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;     // Latest steering pulse width command sent to the servo
+        // int esc_set_point = esc_neutral_pulse_width_;    // ESC target pulse width
+        int esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;    // ESC target pulse width
+        // int latest_esc_command = esc_neutral_pulse_width_;     // Latest ESC pulse width command sent to the motor
+        int latest_esc_command = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;     // Latest ESC pulse width command sent to the motor
+        Traxxas_State traxxas_state = Traxxas_State::Disabled;    // Store the current state of the FSM. Initial state is disabled.
+        Request request = Request::Empty; // Store latest request command. Initial request is empty.
         int esc_empty_msg_count = 0;    // Counter to store number of empty message cycles for esc
         int steering_empty_msg_count = 0;   // Counter to store number of empty message cycles for steering
-        bool line_detector_timeout_flag = false;
+        CV_Status cv_status = CV_Status::Good;    // Store the status of the CV system. Initial status is good.
+        Calibrate_Stage calibrate_stage = Calibrate_Stage::Inactive;    // Store the current state of calibration. Initial state is inactive.
+        int calibrate_fsm_cycle_count = 0;  // Counter for the number of FSM cycles spent in Traxxas_State::Calibrate;
+
+        // For storing parameter values
+        // int steering_neutral_pulse_width_;
+        // int esc_neutral_pulse_width_;
+        int steering_pulse_width_step_;
+        int esc_pulse_width_step_;
+        bool neutral_esc_required_to_enable_;
+        bool action_timeout_can_disable_;
+        bool cv_status_can_disable_;
+
         
         // String for describing the reason for the most recent transition
         std::string reason_for_previous_state_transition = "FSM initialization";
 
         // Traxxas node synchronous FSM: Periodically called at regular time intervals to trigger state transitions 
         // Moore machine implementation: outputs only based on the current state of the machine, regardless of the input
-        void timer_callback() {
+        void timerCallback() {
             // State transitions first
-            switch (currentState) {
-                case State::EnabledWithoutGuards:
-                    if (estop == ESTOP_DISABLE) {
-                        currentState = State::Disabled;
-                        reason_for_previous_state_transition = "Disabled directly";
-                        RCLCPP_INFO_STREAM(this->get_logger(), "Disabled directly" );
-                        estop = ESTOP_EMPTY;
+            // Traxxas FSM transitions
+            switch (traxxas_state) {
+                case Traxxas_State::Disabled:
+                    if (request == Request::Enable) {
+                        traxxas_state = Traxxas_State::Pre_enable;
+                        reason_for_previous_state_transition = "Received request- Enable";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Pre-enable | Received request: Enable" );
                     }
-                    else if (estop == ESTOP_ENABLE) {
-                        RCLCPP_INFO_STREAM(this->get_logger(), "Attempting to enable" );
-                        if (((ESC_NEUTRAL_PULSE_WIDTH-1) <= esc_set_point) && (esc_set_point <= (ESC_NEUTRAL_PULSE_WIDTH+1)))  {
-                            reason_for_previous_state_transition = "ESC is set to neutral, hence, safe to enable";
-                            RCLCPP_INFO_STREAM(this->get_logger(), "ESC is set to neutral, hence, safe to enable" );
-                            currentState = State::Enabled;
-                        } else {
-                            reason_for_previous_state_transition = "ESC is NOT set to neutral; please set to neutral first before enabling";
-                            RCLCPP_INFO_STREAM(this->get_logger(), "ESC is NOT set to neutral; please set to neutral first before enabling" );
-                        }
-                        estop = ESTOP_EMPTY;
+                    else if (request == Request::PrepareForCalibration) {
+                        traxxas_state = Traxxas_State::Pre_calibrate;
+                        reason_for_previous_state_transition = "Received request- Prepare for calibration";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Pre-calibrate | Received request: Prepare for calibration" );
                     }
                     break;
-                case State::Enabled:
-                    if (estop == ESTOP_DISABLE) {
-                        currentState = State::Disabled;
-                        reason_for_previous_state_transition = "Disabled directly";
-                        RCLCPP_INFO_STREAM(this->get_logger(), "Disabled directly" );
-                        estop = ESTOP_EMPTY;
+                case Traxxas_State::Pre_enable:
+                    if (request == Request::Disable) {
+                        traxxas_state = Traxxas_State::Disabled;
+                        reason_for_previous_state_transition = "Received request- Disable";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Disabled | Received request: Disable" );
                     }
-                    else if (estop == ESTOP_ENABLE_WITHOUT_GUARDS) {
-                        currentState = State::EnabledWithoutGuards;
-                        reason_for_previous_state_transition = "Enabled directly without guards";
-                        RCLCPP_INFO_STREAM(this->get_logger(), "Enabled directly without guards" );
-                        estop = ESTOP_EMPTY;
-                    } 
-                    if (esc_empty_msg_count > MIN_EMPTY_MSG_CYCLES_TO_TIMEOUT) {
-                        currentState = State::Disabled;
-                        reason_for_previous_state_transition = "Disabled because ESC channel timed out";
-                        RCLCPP_INFO_STREAM(this->get_logger(), "Disabled because ESC channel timed out: Waited " << static_cast<int>(MIN_EMPTY_MSG_CYCLES_TO_TIMEOUT) << " cycles and no message received");
+                    else if (!(neutral_esc_required_to_enable_)) {  // Disabling takes precedence over enabling, hence the "else if" rather than "if"
+                        traxxas_state = Traxxas_State::Enabled;
+                        reason_for_previous_state_transition = "Neutral ESC not required to enable";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Enabled | Neutral ESC not required to enable" );
                     }
-                    if (steering_empty_msg_count > MIN_EMPTY_MSG_CYCLES_TO_TIMEOUT) {
-                        currentState = State::Disabled;
-                        reason_for_previous_state_transition = "Disabled because steering channel timed out";
-                        RCLCPP_INFO_STREAM(this->get_logger(), "Disabled because steering channel timed out: Waited " << static_cast<int>(MIN_EMPTY_MSG_CYCLES_TO_TIMEOUT) << " cycles and no message received");
-                    }
-                    if (line_detector_timeout_flag) {
-                        currentState = State::Disabled;
-                        reason_for_previous_state_transition = "Disabled because received a line detector timeout flag";
-                        RCLCPP_INFO_STREAM(this->get_logger(), "Disabled because received a line detector timeout flag");
-                        line_detector_timeout_flag = false;
-                    }
-                    // if (object_detected)
-                    break;
-                case State::Disabled:
-                    if (estop == ESTOP_ENABLE) {
-                        RCLCPP_INFO_STREAM(this->get_logger(), "Attempting to enable" );
-                        if (((ESC_NEUTRAL_PULSE_WIDTH-1) <= esc_set_point) && (esc_set_point <= (ESC_NEUTRAL_PULSE_WIDTH+1)))  {
-                            reason_for_previous_state_transition = "ESC is set to neutral, hence, safe to enable";
-                            RCLCPP_INFO_STREAM(this->get_logger(), "ESC is set to neutral, hence, safe to enable" );
-                            currentState = State::Enabled;
+                    else if (neutral_esc_required_to_enable_) {
+                        // if (latest_esc_command == esc_neutral_pulse_width_)  {
+                        if (latest_esc_command == DEFAULT_ESC_NEUTRAL_PULSE_WIDTH)  {
+                            traxxas_state = Traxxas_State::Enabled;
+                            reason_for_previous_state_transition = "ESC is neutral, safe to enable";
+                            RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Enabled | ESC is neutral, safe to enable" );
                         } else {
-                            reason_for_previous_state_transition = "ESC is NOT set to neutral; please set to neutral first before enabling";
-                            RCLCPP_INFO_STREAM(this->get_logger(), "ESC is NOT set to neutral; please set to neutral first before enabling" );
+                            reason_for_previous_state_transition = "ESC is NOT neutral, cannot enable";
+                            RCLCPP_INFO_STREAM(this->get_logger(), "No transition | ESC is NOT neutral, cannot enable" );
                         }
-                        estop = ESTOP_EMPTY;
                     }
-                    else if (estop == ESTOP_ENABLE_WITHOUT_GUARDS) {
-                        currentState = State::EnabledWithoutGuards;
-                        reason_for_previous_state_transition = "Enabled directly without guards";
-                        RCLCPP_INFO_STREAM(this->get_logger(), "Enabled directly without guards" );
-                        estop = ESTOP_EMPTY;
+                    break;
+                case Traxxas_State::Enabled:
+                    if (request == Request::Disable) {
+                        traxxas_state = Traxxas_State::Disabled;
+                        reason_for_previous_state_transition = "Received request- Disable";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Disabled | Received request: Disable" );
                     }
-                    line_detector_timeout_flag = false;
+                    if (action_timeout_can_disable_ && esc_empty_msg_count > MIN_EMPTY_MSG_CYCLES_TO_TIMEOUT) {
+                        traxxas_state = Traxxas_State::Disabled;
+                        reason_for_previous_state_transition = "ESC channel timed out";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Disabled | ESC channel timed out: Waited " << static_cast<int>(MIN_EMPTY_MSG_CYCLES_TO_TIMEOUT) << " cycles and no message received" );
+                    }
+                    if (action_timeout_can_disable_ && steering_empty_msg_count > MIN_EMPTY_MSG_CYCLES_TO_TIMEOUT) {
+                        traxxas_state = Traxxas_State::Disabled;
+                        reason_for_previous_state_transition = "Steering channel timed out";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Disabled | Steering channel timed out: Waited " << static_cast<int>(MIN_EMPTY_MSG_CYCLES_TO_TIMEOUT) << " cycles and no message received" );
+                    }
+                    if (cv_status_can_disable_ && cv_status != CV_Status::Good) {
+                        traxxas_state = Traxxas_State::Disabled;
+                        reason_for_previous_state_transition = "CV status is NOT good";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Disabled | CV status is NOT good" );
+                    }
+                    // if (object_detected) then disable
+                    break;
+                case Traxxas_State::Pre_calibrate:
+                    if (request == Request::Disable) {
+                        traxxas_state = Traxxas_State::Disabled;
+                        reason_for_previous_state_transition = "Received request- Disable";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Disabled | Received request: Disable" );
+                    }
+                    else if (request == Request::PerformCalibration) {
+                        traxxas_state = Traxxas_State::Calibrate;
+                        reason_for_previous_state_transition = "Received request- Perform calibration";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Calibrate | Received request: Perform calibration" );
+                        calibrate_stage = Calibrate_Stage::Full_Forward;    // Enter first stage of Traxxas_State::Calibrate
+                    }
+                    break;
+                case Traxxas_State::Calibrate:
+                    if (request == Request::Disable) {
+                        traxxas_state = Traxxas_State::Disabled;
+                        reason_for_previous_state_transition = "Received request- Disable";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Disabled | Received request: Disable" );
+                    }
+                    if (calibrate_stage == Calibrate_Stage::Complete) {
+                        traxxas_state = Traxxas_State::Disabled;
+                        reason_for_previous_state_transition = "Calibration complete";
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Disabled | Calibration complete" );
+                        calibrate_stage = Calibrate_Stage::Inactive;    // Exit Traxxas_State::Calibrate
+                    }
+                    break;
+
+            }
+            // Calibrate FSM transitions
+            switch (calibrate_stage) {
+                case Calibrate_Stage::Inactive:
+                    break;
+                case Calibrate_Stage::Full_Forward:
+                    if (calibrate_fsm_cycle_count*(1.0) > (CALIBRATE_FULL_FORWARD_PERIOD_IN_MILLISECS*(1.0))/(TRAXXAS_FSM_CYCLE_PERIOD_IN_MILLISECS*(1.0))) {
+                        calibrate_stage = Calibrate_Stage::Full_Reverse;
+                        calibrate_fsm_cycle_count = 0;  // Reset the cycle count
+                    }
+                    break;
+                case Calibrate_Stage::Full_Reverse:
+                    if (calibrate_fsm_cycle_count*(1.0) > (CALIBRATE_FULL_REVERSE_PERIOD_IN_MILLISECS*(1.0))/(TRAXXAS_FSM_CYCLE_PERIOD_IN_MILLISECS*(1.0))) {
+                        calibrate_stage = Calibrate_Stage::Complete;
+                        calibrate_fsm_cycle_count = 0;  // Reset the cycle count
+                    }
+                    break;
+                case Calibrate_Stage::Complete:
                     break;
             }
 
             // Then enact resulting state behaviour
-            switch (currentState) {
-                case State::EnabledWithoutGuards:
-                    //RCLCPP_INFO_STREAM(this->get_logger(), "ENABLED witout GUARDS" );
-                    // Send messages to the motors
-                    setSteeringPulseWidth();
+            switch (traxxas_state) {
+                case Traxxas_State::Disabled:
+                    //RCLCPP_INFO_STREAM(this->get_logger(), "DISABLED" );
+                    // Set ESC and steering back to neutral position
+                    // esc_set_point = esc_neutral_pulse_width_;
+                    esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
                     setEscPulseWidth();
+                    // steering_set_point = steering_neutral_pulse_width_;
+                    steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
+                    setSteeringPulseWidth();
+                    // Action timeout counters should be 0 
+                    steering_empty_msg_count = 0;
+                    esc_empty_msg_count = 0;
+                    // Calibrate FSM cycle count should be 0
+                    calibrate_fsm_cycle_count = 0;
                     break;
-                case State::Enabled:
+                case Traxxas_State::Pre_enable:
+                    //RCLCPP_INFO_STREAM(this->get_logger(), "PRE-ENABLE" );
+                    // Set ESC and steering back to neutral position
+                    // esc_set_point = esc_neutral_pulse_width_;
+                    esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
+                    setEscPulseWidth();
+                    // steering_set_point = steering_neutral_pulse_width_;
+                    steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
+                    setSteeringPulseWidth();
+                    // Action timeout counters should be 0 
+                    steering_empty_msg_count = 0;
+                    esc_empty_msg_count = 0;
+                    // Calibrate FSM cycle count should be 0
+                    calibrate_fsm_cycle_count = 0;
+                    break;
+                case Traxxas_State::Enabled:
                     //RCLCPP_INFO_STREAM(this->get_logger(), "ENABLED" );
                     // Send messages to the motors
                     setSteeringPulseWidth();
                     setEscPulseWidth();
+                    // Only if wheels are spinning, increment the timeout counters
+                    // if (latest_esc_command != esc_neutral_pulse_width_) {
+                    if (latest_esc_command != DEFAULT_ESC_NEUTRAL_PULSE_WIDTH) {
+                        // Increment counters
+                        esc_empty_msg_count++;
+                        steering_empty_msg_count++;
+                    }
+                    // Calibrate FSM cycle count should be 0
+                    calibrate_fsm_cycle_count = 0;
                     break;
-                case State::Disabled:
-                    //RCLCPP_INFO_STREAM(this->get_logger(), "DISABLED" );
-                    // Stop ESC motor and return steering to centre position
-                    setPWMSignal(STEERING_SERVO_CHANNEL, STEERING_NEUTRAL_PULSE_WIDTH);
-                    setPWMSignal(ESC_SERVO_CHANNEL, ESC_NEUTRAL_PULSE_WIDTH);
-                    // Also set esc and steering back to neutral position
-                    esc_set_point = ESC_NEUTRAL_PULSE_WIDTH;
-                    steering_set_point = STEERING_NEUTRAL_PULSE_WIDTH;
-                    // Also reset the counters
-                    steering_empty_msg_count = 0;   // Message received so reset counter to 0
-                    esc_empty_msg_count = 0;    // Message received so reset counter to 0
+                case Traxxas_State::Pre_calibrate:
+                    //RCLCPP_INFO_STREAM(this->get_logger(), "PRE-CALIBRATE" );
+                    // Set ESC and steering back to neutral position
+                    // esc_set_point = esc_neutral_pulse_width_;
+                    esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
+                    setEscPulseWidth();
+                    // steering_set_point = steering_neutral_pulse_width_;
+                    steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
+                    setSteeringPulseWidth();
+                    // Action timeout counters should be 0 
+                    steering_empty_msg_count = 0;
+                    esc_empty_msg_count = 0;
+                    // Calibrate FSM cycle count should be 0
+                    calibrate_fsm_cycle_count = 0;
+                    break;
+                case Traxxas_State::Calibrate:
+                    //RCLCPP_INFO_STREAM(this->get_logger(), "CALIBRATE" );
+                    // Set steering to neutral position
+                    // steering_set_point = steering_neutral_pulse_width_;
+                    steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
+                    setSteeringPulseWidth();
+                    // ESC calibration
+                    switch (calibrate_stage) {
+                        case Calibrate_Stage::Inactive:
+                            break;
+                        case Calibrate_Stage::Full_Forward:
+                            // Full forward
+                            esc_set_point = ESC_MAXIMUM_PULSE_WIDTH;
+                            setEscPulseWidth();
+                            break;
+                        case Calibrate_Stage::Full_Reverse:
+                            // Full reverse
+                            esc_set_point = ESC_MINIMUM_PULSE_WIDTH;
+                            setEscPulseWidth();
+                            break;
+                        case Calibrate_Stage::Complete:
+                            // Neutral (setting ESC to neutral is necessary to complete calibration)
+                            // esc_set_point = esc_neutral_pulse_width_;
+                            esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
+                            setEscPulseWidth();
+                            break;
+                    }
+                    // Action timeout counters should be 0 
+                    steering_empty_msg_count = 0;
+                    esc_empty_msg_count = 0;
+                    // Increment the calibrate FSM cycle count
+                    calibrate_fsm_cycle_count++;
                     break;
             }
 
-            // Only if wheels are spinning, increment the timeout counters
-            if (esc_set_point != ESC_NEUTRAL_PULSE_WIDTH) {
-                // Increment counters
-                esc_empty_msg_count++;
-                steering_empty_msg_count++;
-            }
+            // // ROS Log separator to distinguish between different FSM cycles
+            // RCLCPP_INFO_STREAM(this->get_logger(), "----------------------------------------" );
 
-            // Publish the current state
-            auto message = std_msgs::msg::String();
-            message.data = "Error";
-            switch (currentState) {
-                case State::EnabledWithoutGuards:
-                    message.data = "Enabled without guards (Reason: " + reason_for_previous_state_transition + ")";
+            // Reset the request and CV status to default values (to prevent influencing future FSM cycles)
+            request = Request::Empty;
+            cv_status = CV_Status::Good;
+
+            // Publish the current Traxxas state
+            auto traxxas_state_message = std_msgs::msg::String();
+            traxxas_state_message.data = "Error";
+            switch (traxxas_state) {
+                case Traxxas_State::Disabled:
+                    traxxas_state_message.data = "Disabled (Reason: " + reason_for_previous_state_transition + ")";
                     break;
-                case State::Enabled:
-                    message.data = "Enabled (Reason: " + reason_for_previous_state_transition + ")";
+                case Traxxas_State::Pre_enable:
+                    traxxas_state_message.data = "Pre-enable (Reason: " + reason_for_previous_state_transition + ")";
                     break;
-                case State::Disabled:
-                    message.data = "Disabled (Reason: " + reason_for_previous_state_transition + ")";
+                case Traxxas_State::Enabled:
+                    traxxas_state_message.data = "Enabled (Reason: " + reason_for_previous_state_transition + ")";
+                    break;
+                case Traxxas_State::Pre_calibrate:
+                    traxxas_state_message.data = "Pre-calibrate (Reason: " + reason_for_previous_state_transition + ")";
+                    break;
+                case Traxxas_State::Calibrate:
+                    traxxas_state_message.data = "Calibrate (Reason: " + reason_for_previous_state_transition + ")";
+                    break;
             }
-            state_publisher_->publish(message);
+            state_publisher_->publish(traxxas_state_message);
+
+            // Publish the current steering trim
+            auto steering_trim_message = std_msgs::msg::UInt16();
+            steering_trim_message.data = steering_trim;
+            current_steering_trim_pulse_width_publisher_->publish(steering_trim_message);
         }
 
         // Send a pulse width on the specified channel.
         void setPWMSignal(uint16_t channel, uint16_t pulse_width_in_us) {
+            // Add the steering trim if sending to the steering servo
+            if (channel == STEERING_SERVO_CHANNEL) {
+                pulse_width_in_us += steering_trim;
+            }
+
             // Call the function to set the desired pulse width
             bool result = m_pca9685_servo_driver.set_pwm_pulse_in_microseconds(channel, pulse_width_in_us);
 
-            // Display if an error occurred
+            // Display if an error occurred otherwise publish the value set
             if (!result) {
                 RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] FAILED to set pulse width for servo at channel " << static_cast<int>(channel) );
             }
             else{
+                auto message = std_msgs::msg::UInt16();
+                message.data = pulse_width_in_us;
                 // Publish the value set
                 if (channel == STEERING_SERVO_CHANNEL)
                 {
-                    auto message = ai4r_interfaces::msg::ServoPulseWidth();
-                    message.channel = channel;
-                    message.pulse_width_in_microseconds = pulse_width_in_us;
                     current_steering_pulse_width_publisher_->publish(message);
                 }
                 else if (channel == ESC_SERVO_CHANNEL)
                 {
-                    auto message = ai4r_interfaces::msg::ServoPulseWidth();
-                    message.channel = channel;
-                    message.pulse_width_in_microseconds = pulse_width_in_us;
                     current_esc_pulse_width_publisher_->publish(message);
                 }
-
             }
         }
 
@@ -240,6 +393,7 @@ class TraxxasNode : public rclcpp::Node {
         uint16_t percentageToPulseWidth(float percent_value, uint16_t minimum_pw, uint16_t maximum_pw) {
             uint16_t pulse_width = 0;
 
+            // Linear conversion capped between the range -100 to 100
             if(percent_value <= -100.0) {
                 pulse_width = minimum_pw;
             }
@@ -257,124 +411,44 @@ class TraxxasNode : public rclcpp::Node {
             return pulse_width;
         }
 
-        // Send steering servo to PWM set point incrementally
+        // Send steering PWM one step closer to the set point
         void setSteeringPulseWidth() {
-            // Read the most recent steering set point
-            int value = steering_set_point;
-
-            // See if this is greater than the defined steering step away from the
-            // last value set to the steering servo. If it is, increment by the
-            // step in the correct direction and send that. Otherwise send the set
-            // point.
-            if(abs(value - last_steering_command) > STEERING_PULSE_WIDTH_STEP) {
-                if(value > last_steering_command) {
-                    value = last_steering_command + STEERING_PULSE_WIDTH_STEP;
+            // See if the set point is at a distance greater than the defined step away from the latest command. 
+            // If it is, increment the command by the step amount towards the direction of the set point. 
+            // Otherwise, the command is exactly the set point.
+            if(abs(steering_set_point - latest_steering_command) > steering_pulse_width_step_) {
+                if(steering_set_point > latest_steering_command) {
+                    latest_steering_command += steering_pulse_width_step_;
                 } else {
-                    value = last_steering_command - STEERING_PULSE_WIDTH_STEP;
+                    latest_steering_command -= steering_pulse_width_step_;
                 }
+            } else {
+                latest_steering_command = steering_set_point;
             }
 
-            setPWMSignal(STEERING_SERVO_CHANNEL, value);
-            last_steering_command = value;
+            setPWMSignal(STEERING_SERVO_CHANNEL, latest_steering_command);
         }
 
-        // Send ESC to PWM set point directly
+        // Send ESC PWM one step closer to the set point
         void setEscPulseWidth() {
-            // Directly send the ESC set point
-            setPWMSignal(ESC_SERVO_CHANNEL, esc_set_point);
-        }
-
-        // For receiving PWM values to control the steering (channel 0) or esc (channel 1)
-        void servoSubscriberCallback(const ai4r_interfaces::msg::ServoPulseWidth & msg) {
-            // Extract the channel and pulse width from the message
-            uint16_t channel = msg.channel;
-            uint16_t pulse_width_in_us = msg.pulse_width_in_microseconds;
-
-            // Display the message received
-            //RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] Message received for servo with channel = " << static_cast<int>(channel) << ", and pulse width [us] = " << static_cast<int>(pulse_width_in_us) );
-
-            // Save the set value
-            if(channel == ESC_SERVO_CHANNEL) {
-                // Limit the pulse width to be either:
-                // > zero
-                // > in the range [1000,2000]
-                if (pulse_width_in_us > 0) {
-                    if (pulse_width_in_us < ESC_MINIMUM_PULSE_WIDTH)
-                        pulse_width_in_us = ESC_MINIMUM_PULSE_WIDTH;
-                    if (pulse_width_in_us > ESC_MAXIMUM_PULSE_WIDTH)
-                        pulse_width_in_us = ESC_MAXIMUM_PULSE_WIDTH;
+            // See if the set point is at a distance greater than the defined step away from the latest command.
+            // If it is, increment the command by the step amount towards the direction of the set point.
+            // Otherwise, the command is exactly the set point.
+            if(abs(esc_set_point - latest_esc_command) > esc_pulse_width_step_) {
+                if(esc_set_point > latest_esc_command) {
+                    latest_esc_command += esc_pulse_width_step_;
+                } else {
+                    latest_esc_command -= esc_pulse_width_step_;
                 }
-                else {
-                    pulse_width_in_us = 0;
-                }
-
-                // Set servo PWM signal to this value
-                setPWMSignal(channel, pulse_width_in_us);
-
-                esc_set_point = pulse_width_in_us;
-
-                esc_empty_msg_count = 0;    // Message received so reset counter to 0
+            } else {
+                latest_esc_command = esc_set_point;
             }
-            else if(channel == STEERING_SERVO_CHANNEL) {
-                // Limit the pulse width to be either:
-                // > zero
-                // > in the range [1000,2000]
-                if (pulse_width_in_us > 0) {
-                    if (pulse_width_in_us < STEERING_MINIMUM_PULSE_WIDTH)
-                        pulse_width_in_us = STEERING_MINIMUM_PULSE_WIDTH;
-                    if (pulse_width_in_us > STEERING_MAXIMUM_PULSE_WIDTH)
-                        pulse_width_in_us = STEERING_MAXIMUM_PULSE_WIDTH;
-                }
-                else {
-                    pulse_width_in_us = 0;
-                }
 
-                // Set servo PWM signal to this value
-                setPWMSignal(channel, pulse_width_in_us);
-
-                last_steering_command = pulse_width_in_us;
-                steering_set_point = pulse_width_in_us;
-
-                steering_empty_msg_count = 0;   // Message received so reset counter to 0
-            }
+            setPWMSignal(ESC_SERVO_CHANNEL, latest_esc_command);
         }
 
-        // For receiving percentage values to control the steering (channel 0)
-        void steeringSetPointPercentSubscriberCallback(const std_msgs::msg::Float32 & msg) {
-            // Extract percent value
-            float value = msg.data;
-
-            // Convert to pulse width
-            float new_value = percentageToPulseWidth(value, STEERING_MINIMUM_PULSE_WIDTH, STEERING_MAXIMUM_PULSE_WIDTH);
-
-            // Display the message received
-            //RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] Message received for steering servo. Percentage command received = " << static_cast<float>(value) << ", PWM sent to motors = " << static_cast<float>(new_value) );
-           
-            // Save value as the set point
-            steering_set_point = new_value;
-
-            steering_empty_msg_count = 0;   // Message received so reset counter to 0
-        }
-
-        // For receiving percentage values to control the esc (channel 1)
-        void escSetPointPercentSubscriberCallback(const std_msgs::msg::Float32 & msg) {
-            // Extract percent value
-            float value = msg.data;
-
-            // Convert to pulse width
-            float new_value = percentageToPulseWidth(value, ESC_MINIMUM_PULSE_WIDTH, ESC_MAXIMUM_PULSE_WIDTH);
-
-            // Display the message received
-            //RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] Message received for ESC. Percentage command received = " << static_cast<float>(value) << ", PWM sent to motors = " << static_cast<float>(new_value) );
-
-            // Save value as the set point
-            esc_set_point = new_value;
-
-            esc_empty_msg_count = 0;    // Message received so reset counter to 0
-        }
-
-        // For receiving percentage values to control both the steering (channel 0) and esc (channel 1)
-        void escAndSteeringSetPointPercentSubscriberCallback(const ai4r_interfaces::msg::EscAndSteering & msg) {
+        // For receiving percentage values to control both the steering (channel 0) and esc (channel 1) using the synchronous FSM
+        void escAndSteeringSetPointPercentActionSubscriberCallback(const ai4r_interfaces::msg::EscAndSteeringPercent & msg) {
             // Convert to pulse width and save value as the set point
             steering_set_point = percentageToPulseWidth(msg.steering_percent, STEERING_MINIMUM_PULSE_WIDTH, STEERING_MAXIMUM_PULSE_WIDTH);
             esc_set_point = percentageToPulseWidth(msg.esc_percent, ESC_MINIMUM_PULSE_WIDTH, ESC_MAXIMUM_PULSE_WIDTH);
@@ -387,52 +461,136 @@ class TraxxasNode : public rclcpp::Node {
             esc_empty_msg_count = 0;    // Message received so reset counter to 0
         }
 
-        // For receiving estop commands
-        void estopSubscriberCallback(const std_msgs::msg::UInt16 & msg) {
-            // Extract estop command
-            int command = msg.data;
+        // For receiving request commands
+        void requestSubscriberCallback(const std_msgs::msg::UInt8 & msg) {
+            // Extract request
+            int incoming = msg.data;
 
             // Display the message received
-            if (command == ESTOP_DISABLE) {
-                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] \"ESTOP\" pressed" );
-                estop = ESTOP_DISABLE;
-            } else if (command == ESTOP_ENABLE) {
-                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] \"ESTOP\" released" );
-                estop = ESTOP_ENABLE;
-            } else if (command == ESTOP_ENABLE_WITHOUT_GUARDS) {
-                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] \"ESTOP\" released without guards" );
-                estop = ESTOP_ENABLE_WITHOUT_GUARDS;
+            if (incoming == 0) {
+                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] REQUEST DISABLE" );
+                request = Request::Disable;
+            } else if (incoming == 1) {
+                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] REQUEST ENABLE" );
+                request = Request::Enable;
+            } else if (incoming == 2) {
+                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] REQUEST PREPARE FOR CALIBRATION" );
+                request = Request::PrepareForCalibration;
+            } else if (incoming == 3) {
+                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] REQUEST PERFORM CALIBRATION" );
+                request = Request::PerformCalibration;
             } else {
-                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] Invalid \"estop\" command" );
+                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] INVALID REQUEST" );
             }
         }
 
-        // For receiving estop commands
-        void lineDetectorTimeoutCallback(const std_msgs::msg::Bool & msg) {
-            // Extract flag command
-            bool timeout_flag = msg.data;
+        // For receiving cv-error flag commands
+        void cvStatusSubscriberCallback(const std_msgs::msg::UInt8 & msg) {
+            // Extract CV status
+            int incoming = msg.data;
 
-            // Respond if the flag is true
-            if (timeout_flag)
-            {
-                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] Received message of line detector timeout event occurred." );
-                line_detector_timeout_flag = true;
+            // Log if the CV status is NOT good
+            if (incoming != 0) {
+                RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] CV status is NOT good." );
+                cv_status = CV_Status::Error;
             }
+        }
+
+        // For receiving steering trim increment/decrement commands
+        void steeringTrimIncrementSubscriberCallback(const std_msgs::msg::Int16 & msg) {
+            // Extract the increment/decrement value
+            int incoming = msg.data;
+
+            // Increment/decrement the steering trim
+            steering_trim += incoming;
+
+            // Display the message received and new steering trim value
+            RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] Steering trim increment received: " << incoming << ". New steering trim = " << steering_trim );
+        }
+
+        // For receiving steering trim set commands
+        void steeringTrimSetSubscriberCallback(const std_msgs::msg::Int16 & msg) {
+            // Extract the set value
+            int incoming = msg.data;
+
+            // Set the steering trim
+            steering_trim = incoming;
+
+            // Display the message received and new steering trim value
+            RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] Steering trim set received: " << incoming << ". New steering trim = " << steering_trim );
+        }
+
+        // Callback for setting parameters
+        rcl_interfaces::msg::SetParametersResult parametersCallback(const std::vector<rclcpp::Parameter> &parameters) {
+            rcl_interfaces::msg::SetParametersResult result;
+            result.successful = false;
+            result.reason = "";
+            for (const auto &param : parameters) {
+                // if (param.get_name() == "steering_neutral_pulse_width") {
+                //     if (param.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
+                //         if (param.as_int() > STEERING_MINIMUM_PULSE_WIDTH && param.as_int() < STEERING_MAXIMUM_PULSE_WIDTH) {
+                //             steering_neutral_pulse_width_ = param.as_int();
+                //             result.successful = true;
+                //         }
+                //     }
+                // }
+                // if (param.get_name() == "esc_neutral_pulse_width") {
+                //     if (param.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
+                //         if (param.as_int() > ESC_MINIMUM_PULSE_WIDTH && param.as_int() < ESC_MAXIMUM_PULSE_WIDTH) {
+                //             esc_neutral_pulse_width_ = param.as_int();
+                //             result.successful = true;
+                //         }
+                //     }
+                // }
+                if (param.get_name() == "steering_pulse_width_step") {
+                    if (param.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
+                        steering_pulse_width_step_ = param.as_int();
+                        result.successful = true;
+                    }
+                }
+                if (param.get_name() == "esc_pulse_width_step") {
+                    if (param.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
+                        esc_pulse_width_step_ = param.as_int();
+                        result.successful = true;
+                    }
+                }
+                if (param.get_name() == "neutral_esc_required_to_enable") {
+                    if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
+                        neutral_esc_required_to_enable_ = param.as_bool();
+                        result.successful = true;
+                    }
+                }
+                if (param.get_name() == "action_timeout_can_disable") {
+                    if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
+                        action_timeout_can_disable_ = param.as_bool();
+                        result.successful = true;
+                    }
+                }
+                if (param.get_name() == "cv_status_can_disable") {
+                    if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
+                        cv_status_can_disable_ = param.as_bool();
+                        result.successful = true;
+                    }
+                }
+            }
+            return result;
         }
 
 
         rclcpp::TimerBase::SharedPtr timer_;
 
-        rclcpp::Subscription<ai4r_interfaces::msg::ServoPulseWidth>::SharedPtr servo_pulse_width_sub_;
-        rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr steering_set_point_percent_sub_;
-        rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr esc_set_point_percent_sub_;
-        rclcpp::Subscription<ai4r_interfaces::msg::EscAndSteering>::SharedPtr esc_and_steering_set_point_percent_sub_;
-        rclcpp::Subscription<std_msgs::msg::UInt16>::SharedPtr estop_sub_;
-        rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr line_detector_timeout_sub_;
+        rclcpp::Subscription<ai4r_interfaces::msg::EscAndSteeringPercent>::SharedPtr esc_and_steering_set_point_percent_action_sub_;
+        rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr request_sub_;
+        rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr cv_status_sub_;
+        rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr steering_trim_increment_sub_;
+        rclcpp::Subscription<std_msgs::msg::Int16>::SharedPtr steering_trim_set_sub_;
 
         rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_publisher_;
-        rclcpp::Publisher<ai4r_interfaces::msg::ServoPulseWidth>::SharedPtr current_esc_pulse_width_publisher_;
-        rclcpp::Publisher<ai4r_interfaces::msg::ServoPulseWidth>::SharedPtr current_steering_pulse_width_publisher_;
+        rclcpp::Publisher<std_msgs::msg::UInt16>::SharedPtr current_esc_pulse_width_publisher_;
+        rclcpp::Publisher<std_msgs::msg::UInt16>::SharedPtr current_steering_pulse_width_publisher_;
+        rclcpp::Publisher<std_msgs::msg::UInt16>::SharedPtr current_steering_trim_pulse_width_publisher_;
+
+        OnSetParametersCallbackHandle::SharedPtr callback_handle_;
 
 };
 

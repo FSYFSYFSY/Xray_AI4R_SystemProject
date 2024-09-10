@@ -11,6 +11,7 @@ find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(ai4r_interfaces REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
@@ -48,6 +49,11 @@ ament_target_dependencies(multiple_pub_sub rclcpp std_msgs ai4r_interfaces)
 add_executable(looping src/looping_cpp_node.cpp)
 ament_target_dependencies(looping rclcpp std_msgs ai4r_interfaces)
 
+add_executable(traxxas_old src/traxxas_old_node.cpp
+                          drivers/src/i2c_driver/i2c_driver.cpp
+                          drivers/src/pca9685/pca9685.cpp)
+ament_target_dependencies(traxxas_old rclcpp std_msgs ai4r_interfaces)
+
 add_executable(traxxas src/traxxas_node.cpp
                           drivers/src/i2c_driver/i2c_driver.cpp
                           drivers/src/pca9685/pca9685.cpp)
@@ -58,7 +64,22 @@ add_executable(mux_testing src/mux_testing.cpp
                           drivers/src/pca9685/pca9685.cpp)
 ament_target_dependencies(mux_testing rclcpp std_msgs ai4r_interfaces)
 
+add_executable(gpiod_rc_switch_testing src/gpiod_rc_switch_testing.cpp)
+ament_target_dependencies(gpiod_rc_switch_testing rclcpp std_msgs)
+target_link_libraries(gpiod_rc_switch_testing gpiod)
 
+add_executable(esc_calibration_service_testing src/esc_calibration_service_testing.cpp
+                          drivers/src/i2c_driver/i2c_driver.cpp
+                          drivers/src/pca9685/pca9685.cpp)
+ament_target_dependencies(esc_calibration_service_testing rclcpp std_msgs std_srvs ai4r_interfaces)
+add_executable(traxxas src/traxxas_node.cpp
+                          drivers/src/i2c_driver/i2c_driver.cpp
+                          drivers/src/pca9685/pca9685.cpp)
+ament_target_dependencies(traxxas rclcpp std_msgs ai4r_interfaces)
+
+add_executable(rc_switch_node src/rc_switch_node.cpp)
+ament_target_dependencies(rc_switch_node rclcpp std_msgs)
+target_link_libraries(rc_switch_node gpiod)
 
 # Install Cpp executables
 install(TARGETS
@@ -69,8 +90,12 @@ install(TARGETS
   servo_pulse_width_sub
   multiple_pub_sub
   looping
-  traxxas
+  traxxas_old
   mux_testing
+  gpiod_rc_switch_testing
+  esc_calibration_service_testing
+  traxxas
+  rc_switch_node
   sensor_pcb_parser
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -90,7 +115,14 @@ install(PROGRAMS
   scripts/LineDetectorEllipse.py
   scripts/test_yaml_params.py
   scripts/Utils.py
+  scripts/policy_node_old.py
   scripts/policy_node.py
+  scripts/image_publishing_line_detector_node.py
+  scripts/image_publishing_node.py
+  scripts/stream_oak_node_old.py
+  scripts/stream_oak_node.py
+  scripts/cone_detector_node_old.py
+  scripts/cone_detector_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -106,7 +138,7 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-# Install launch files.
+# Install launch and YAML parameter config files.
 install(DIRECTORY
   launch
   config

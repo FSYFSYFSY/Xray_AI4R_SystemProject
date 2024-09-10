@@ -15,11 +15,13 @@ find_package(rosidl_default_generators REQUIRED)  # Find the package that genera
 # Declare the list of messages you want to generate
 set(msg_files
   "msg/ServoPulseWidth.msg"
-  "msg/EscAndSteering.msg"
+  "msg/EscAndSteeringPercent.msg"
   "msg/ElementInt.msg"
   "msg/IntArray.msg"
   "msg/PixelCoordsFloat32.msg"
   "msg/ImagePointsArray.msg"
+  "msg/EscAndSteeringPulseWidth.msg"
+  "msg/ConePointsArray.msg"
   "msg/Imu.msg"
   "msg/TofSensor.msg"
   #DEPENDENCIES geometry_msgs # Add packages that above messages depend on, in this case geometry_msgs for Sphere.msg
