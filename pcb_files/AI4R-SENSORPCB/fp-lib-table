@@ -1,0 +1,7 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "Polulu2801RCSwitch")(type "KiCad")(uri "${KIPRJMOD}/Component-Libraries/Polulu2801-RCSwitch")(options "")(descr ""))
+  (lib (name "FSM300")(type "KiCad")(uri "${KIPRJMOD}/Component-Libraries/FSM300")(options "")(descr ""))
+  (lib (name "RP2040-Zero")(type "KiCad")(uri "${KIPRJMOD}/Component-Libraries/RP2040-Zero")(options "")(descr ""))
+  (lib (name "PRT-12748")(type "KiCad")(uri "${KIPRJMOD}/Component-Libraries/PRT-12748")(options "")(descr ""))
+)

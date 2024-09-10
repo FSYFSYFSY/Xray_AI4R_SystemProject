@@ -1,0 +1,5 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "Polulu-PCA9685")(type "KiCad")(uri "${KIPRJMOD}/Component-Libraries/Polulu-PCA9685/Polulu-PCA9685.kicad_sym")(options "")(descr ""))
+  (lib (name "2801RCSwitch")(type "KiCad")(uri "${KIPRJMOD}/Component-Libraries/Polulu2801-RCSwitch/2801RCSwitch.kicad_sym")(options "")(descr ""))
+)

@@ -24,24 +24,35 @@ include_directories(
 )
 
 # Create Cpp executable
+add_executable(sensor_pcb_parser src/sensor_pcb_parser.cpp)
+ament_target_dependencies(sensor_pcb_parser rclcpp ai4r_interfaces std_msgs)
+
 add_executable(minimal_cpp_executable src/minimal_cpp_node.cpp)
 ament_target_dependencies(minimal_cpp_executable rclcpp)
+
 add_executable(oop_cpp_executable src/oop_cpp_node.cpp)
 ament_target_dependencies(oop_cpp_executable rclcpp)
+
 add_executable(talker src/oop_pub_cpp_node.cpp)
 ament_target_dependencies(talker rclcpp std_msgs)
+
 add_executable(listener src/oop_sub_cpp_node.cpp)
 ament_target_dependencies(listener rclcpp std_msgs)
+
 add_executable(servo_pulse_width_sub src/servo_pulse_width_sub_cpp_node.cpp)
 ament_target_dependencies(servo_pulse_width_sub rclcpp std_msgs ai4r_interfaces)
+
 add_executable(multiple_pub_sub src/multiple_pub_sub_cpp_node.cpp)
 ament_target_dependencies(multiple_pub_sub rclcpp std_msgs ai4r_interfaces)
+
 add_executable(looping src/looping_cpp_node.cpp)
 ament_target_dependencies(looping rclcpp std_msgs ai4r_interfaces)
+
 add_executable(traxxas src/traxxas_node.cpp
                           drivers/src/i2c_driver/i2c_driver.cpp
                           drivers/src/pca9685/pca9685.cpp)
 ament_target_dependencies(traxxas rclcpp std_msgs ai4r_interfaces)
+
 add_executable(mux_testing src/mux_testing.cpp
                           drivers/src/i2c_driver/i2c_driver.cpp
                           drivers/src/pca9685/pca9685.cpp)
@@ -60,6 +71,7 @@ install(TARGETS
   looping
   traxxas
   mux_testing
+  sensor_pcb_parser
   DESTINATION lib/${PROJECT_NAME}
 )
 
