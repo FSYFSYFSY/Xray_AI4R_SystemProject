@@ -1,0 +1,45 @@
+<launch>
+  <!-- Including the foxglove launch file in order to set custom values as it is READ ONLY -->
+  <include file="$(find-pkg-share foxglove_bridge)/launch/foxglove_bridge_launch.xml">
+    <!-- Information from: https://docs.foxglove.dev/docs/connecting-to-data/ros-foxglove-bridge/ -->
+    <!-- NOTE: These parameters must be set at initialization through a launch file such as this one or the command line. They cannot be modified at runtime. -->
+
+    <!-- port: The TCP port to bind the WebSocket server to. Must be a valid TCP port number, or 0 to use a random port. Defaults to 8765. -->
+    <arg name="port" value="1234"/>
+
+    <!-- address: The host address to bind the WebSocket server to. Defaults to 0.0.0.0, listening on all interfaces by default. Change this to 127.0.0.1 (or ::1 for IPv6) to only accept connections from the local machine. -->
+    <!-- <arg name="address" value="0.0.0.0"/> -->
+
+    <!-- tls: If true, use Transport Layer Security (TLS) for encrypted communication. Defaults to false. -->
+
+    <!-- certfile: Path to the certificate to use for TLS. Required when tls is set to true. Defaults to "". -->
+
+    <!-- keyfile: Path to the private key to use for TLS. Required when tls is set to true. Defaults to "". -->
+
+    <!-- topic_whitelist: List of regular expressions (ECMAScript grammar) of whitelisted topic names. Defaults to [".*"]. -->
+
+    <!-- service_whitelist: List of regular expressions (ECMAScript grammar) of whitelisted service names. Defaults to [".*"]. -->
+
+    <!-- param_whitelist: List of regular expressions (ECMAScript grammar) of whitelisted parameter names. Defaults to [".*"]. -->
+
+    <!-- client_topic_whitelist: List of regular expressions (ECMAScript grammar) of whitelisted client-published topic names. Defaults to [".*"].-->
+
+    <!-- send_buffer_limit: Connection send buffer limit in bytes. Messages will be dropped when a connection's send buffer reaches this limit to avoid a queue of outdated messages building up. Defaults to 10000000 (10 MB). -->
+
+    <!-- use_compression: Use websocket compression (permessage-deflate). Suited for connections with smaller bandwith, at the cost of additional CPU load. -->
+
+    <!-- capabilities: List of supported server capabilities. Defaults to [clientPublish,parameters,parametersSubscribe,services,connectionGraph,assets]. -->
+
+    <!-- asset_uri_allowlist: List of regular expressions (ECMAScript grammar) of allowed asset URIs. Uses the resource_retriever to resolve package://, file:// or http(s):// URIs. Note that this list should be carefully configured such that no confidential files are accidentally exposed over the websocket connection. As an extra security measure, URIs containing two consecutive dots (..) are disallowed as they could be used to construct URIs that would allow retrieval of confidential files if the allowlist is not configured strict enough (e.g. package://<pkg_name>/../../../secret.txt). Defaults to ["^package://(?:\w+/)*\w+\.(?:dae|fbx|glb|gltf|jpeg|jpg|mtl|obj|png|stl|tif|tiff|urdf|webp|xacro)$"]. -->
+
+    <!-- num_threads: The number of threads to use for the ROS node executor. This controls the number of subscriptions that can be processed in parallel. 0 means one thread per CPU core. Defaults to 0. -->
+
+    <!-- min_qos_depth: Minimum depth used for the QoS profile of subscriptions. Defaults to 1. This is to set a lower limit for a subscriber's QoS depth which is computed by summing up depths of all publishers. See also https://github.com/foxglove/ros-foxglove-bridge/issues/208. -->
+
+    <!-- max_qos_depth: Maximum depth used for the QoS profile of subscriptions. Defaults to 25. -->
+
+    <!-- include_hidden: Include hidden topics and services. Defaults to false. -->
+
+    <!-- ... other arguments ... -->
+  </include>
+</launch>

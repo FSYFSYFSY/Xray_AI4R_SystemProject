@@ -1,0 +1,9 @@
+traxxas_node:
+  ros__parameters:
+    # steering_neutral_pulse_width: 1500
+    # esc_neutral_pulse_width: 1490
+    steering_pulse_width_step: 50
+    esc_pulse_width_step: 250
+    neutral_esc_required_to_enable: True
+    action_timeout_can_disable: True
+    cv_status_can_disable: True

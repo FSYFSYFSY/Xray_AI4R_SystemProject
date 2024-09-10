@@ -16,6 +16,7 @@
   <depend>rclcpp</depend>
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>ai4r_interfaces</depend>
 
   <exec_depend>pynput-pip</exec_depend>
