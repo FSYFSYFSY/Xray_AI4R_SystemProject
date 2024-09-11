@@ -46,7 +46,7 @@ class SensorPcbParserNode: public rclcpp::Node
                         token = strtok(read_buf," ");
                         if (!strcmp(token,"IMU\0")) {
                             token = strtok(NULL," ");
-                            if(!strcmp(token,"G\0")) {                            auto msg = ai4r_interfaces::msg::Imu();
+                            if(!strcmp(token,"G\0")) {                            
                                 msg.usec_since_last_gyro_msg = atoll(strtok(NULL," ")); 
                                 msg.roll = atof(strtok(NULL," ")); 
                                 msg.pitch = atof(strtok(NULL," "));

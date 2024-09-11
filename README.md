@@ -21,6 +21,9 @@ You should now have managed to build the packages.
 - Create a file ttyACM0.rules containing `KERNEL=="ttyACM0', MODE="0666"` at /etc/udev/rules.d/ttyACM0.rules
 - Create a file ttyACM1.rules containing `KERNEL=="ttyACM1', MODE="0666"` at /etc/udev/rules.d/ttyACM1.rules
 
+To do this with one command run:
+`echo 'KERNEL=="ttyACM0", MODE="0666"' | sudo tee /etc/udev/rules.d/ttyACM0.rules & echo 'KERNEL=="ttyACM1", MODE="0666"' | sudo tee /etc/udev/rules.d/ttyACM1.rules & sudo udevadm control --reload-rules && sudo udevadm trigger`
+
 ### Trouble Shooting:
 
 If you encounter a build error like `Could not find package configuration file provided by "rosidl_default_generators" with any of the following names:" ...` 
