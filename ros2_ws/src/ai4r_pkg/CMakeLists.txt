@@ -72,10 +72,7 @@ add_executable(esc_calibration_service_testing src/esc_calibration_service_testi
                           drivers/src/i2c_driver/i2c_driver.cpp
                           drivers/src/pca9685/pca9685.cpp)
 ament_target_dependencies(esc_calibration_service_testing rclcpp std_msgs std_srvs ai4r_interfaces)
-add_executable(traxxas src/traxxas_node.cpp
-                          drivers/src/i2c_driver/i2c_driver.cpp
-                          drivers/src/pca9685/pca9685.cpp)
-ament_target_dependencies(traxxas rclcpp std_msgs ai4r_interfaces)
+
 
 add_executable(rc_switch_node src/rc_switch_node.cpp)
 ament_target_dependencies(rc_switch_node rclcpp std_msgs)
