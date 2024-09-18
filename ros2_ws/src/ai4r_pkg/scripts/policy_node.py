@@ -116,6 +116,11 @@ class PolicyNode(Node):
                 heading_angle_in_radians -= 2.0*np.pi
             if (heading_angle_in_radians < -np.pi):
                 heading_angle_in_radians += 2.0*np.pi
+
+            # Publish the heading angle
+            heading_msg = Float32()
+            heading_msg.data = heading_angle_in_radians * 180.0/np.pi
+            self.imu_heading_angle_publisher_.publish(heading_msg)
             
             # =======================================
             # START OF: INSERT POLICY CODE BELOW HERE
@@ -309,10 +314,6 @@ class PolicyNode(Node):
         # Extract the heading angle into the class variable
         self.heading_angle_from_imu = msg.roll
 
-        # Publish the heading angle
-        msg = Float32()
-        msg.data = self.heading_angle_from_imu 
-        self.imu_heading_angle_publisher_.publish(msg)
 
 
 
