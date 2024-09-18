@@ -212,6 +212,25 @@
       "foxglovePanelTitle": "PWM values for ESC and STEERING",
       "followingViewWidth": 50
     },
+    "Plot!2fyd9v9": {
+      "paths": [
+        {
+          "timestampMethod": "receiveTime",
+          "value": "/imu_heading_angle.data",
+          "enabled": true,
+          "color": "#4e98e2"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "top",
+      "showPlotValuesInLegend": true,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "sidebarDimension": 44,
+      "followingViewWidth": 50
+    },
     "Publish!1eci2ic": {
       "buttonText": "Prepare for ESC Calibration",
       "buttonTooltip": "",
@@ -469,9 +488,14 @@
                 "second": "Plot!1dgg1w6",
                 "direction": "column"
               },
-              "second": "Plot!bqyzge",
+              "second": {
+                "first": "Plot!bqyzge",
+                "second": "Plot!2fyd9v9",
+                "direction": "column",
+                "splitPercentage": 54.02504472271913
+              },
               "direction": "column",
-              "splitPercentage": 65.78707916287534
+              "splitPercentage": 49.13557779799818
             },
             "direction": "row",
             "splitPercentage": 64.63541666666667
