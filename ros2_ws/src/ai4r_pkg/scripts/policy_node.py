@@ -5,6 +5,7 @@ from rclpy.node import Node
 
 from ai4r_interfaces.msg import EscAndSteeringPercent
 from ai4r_interfaces.msg import ConePointsArray
+from ai4r_interfaces.msg import Imu
 from std_msgs.msg import String, UInt16, Float32
 from rclpy.parameter import Parameter
 
@@ -59,9 +60,16 @@ class PolicyNode(Node):
         self.cv_subscription = self.create_subscription(ConePointsArray, 'cone_points', self.cv_cone_detection_callback, 10)
         # > For subscribing to requests to transition the state
         self.fsm_transition_request_subscription = self.create_subscription(UInt16, 'policy_fsm_transition_request', self.fsm_transition_request_callback, 10)
+        # > For subscribing to IMU data
+        self.imu_subscription = self.create_subscription(Imu, 'IMU', self.imu_callback, 10)
         # > Prevent unused variable warning
         self.cv_subscription
         self.fsm_transition_request_subscription
+        self.imu_subscription
+
+        # Initialize a class variable for the most recent heading angle measurement from the IMu
+        self.heading_angle_from_imu = 0.0
+        self.heading_angle_for_tare = 0.0
 
         # Create a timer that is used for continually publishing the FSM state
         # > First argument is the duration between 2 callbacks (in seconds).
@@ -74,7 +82,6 @@ class PolicyNode(Node):
     def cv_cone_detection_callback(self, msg):
         # Log the data received for debugging purposes:
         # self.get_logger().info("[POLICY NODE] Cone detection points: \"%s\"" % msg.n)
-
 
         # Return if in the "not publishing actions" state
         if (self.fsm_state == FSM_STATE_NOT_PUBLISHING_ACTIONS):
@@ -99,6 +106,14 @@ class PolicyNode(Node):
             x_coords = msg.x
             y_coords = msg.y
             cone_colour = msg.c
+
+            # Extract the current heading angle into a local vairable
+            heading_angle_in_radians = self.heading_angle_from_imu - self.heading_angle_for_tare
+            # > "Unwrap" the angle to be between [-pi,pi]
+            if (heading_angle_in_radians > np.pi):
+                heading_angle_in_radians -= 2.0*np.pi
+            if (heading_angle_in_radians < -np.pi):
+                heading_angle_in_radians += 2.0*np.pi
             
             # =======================================
             # START OF: INSERT POLICY CODE BELOW HERE
@@ -110,6 +125,17 @@ class PolicyNode(Node):
             #   - "x_coords" and "y_coords" give the x and y world coordinates of the cones respectively
             #   - "cone_colour" gives the colour of the cones (0 for yellow, 1 for blue)
             #   - A cone represents a single index of all three lists e.g. x_coords[i], y_coords[i], cone_colour[i] represent the ith cone
+
+            # > The "heading_angle_in_radians" is:
+            #   - The current heading angle of the car as measured by the IMU.
+            #   - This value is in units of radians.
+            #   - "Zero" heading angle will correspond to direction the car it facing when the IMU first boots up
+            #   - The "re-zero" the IMU, there are class variables that set the current value as zero everytime
+            #     that the "FSM_STATE_PUBLISHING_POLICY_ACTION" request is received.
+            #   - A sensor fusion algorithms is running the IMU chip itself to estimate this heading angle
+            #     based on observations of acceleration, angluar velocity, and magnetometer.
+            #   - Hence, the heading angle can slowly drift with time.
+            #   - The IMU chip itself "calibrates" for drift any time that the IMU is stationary.
 
             # ACTIONS:
             # > The "esc_action" is:
@@ -243,11 +269,15 @@ class PolicyNode(Node):
             # Log that this occurred
             self.get_logger().info("[POLICY NODE] Received request to transition to an invalid state, requested_state = " + str(requested_state))
 
+        if requested_state == FSM_STATE_PUBLISHING_POLICY_ACTION:
+            self.heading_angle_for_tare = self.heading_angle_from_imu
+
         # Transition the state
         self.fsm_state = requested_state
 
         # Log the data received for debugging purposes:
         self.get_logger().info("[POLICY NODE] Received request to transition to FSM state: " + str(msg.data))
+
 
 
     # CALLBACK FUNCTION: for the timer
@@ -269,6 +299,13 @@ class PolicyNode(Node):
 
         # Publish the message
         self.fsm_state_publisher_.publish(msg)
+
+
+
+    # CALLBACK FUNCTION: for receiving IMU data
+    def imu_callback(self, msg):
+        # Extract the heading angle into the class variable
+        self.heading_angle_from_imu = msg.roll
 
 
 
