@@ -51,7 +51,7 @@ class TraxxasNode : public rclcpp::Node {
             current_esc_pulse_width_publisher_ = this->create_publisher<std_msgs::msg::UInt16>("traxxas_esc_current_pulse_width", 1000);
             current_steering_pulse_width_publisher_ = this->create_publisher<std_msgs::msg::UInt16>("traxxas_steering_current_pulse_width", 1000);
             // Publisher for the latest steering trim
-            current_steering_trim_pulse_width_publisher_ = this->create_publisher<std_msgs::msg::UInt16>("traxxas_steering_trim_current_pulse_width", 10);
+            current_steering_trim_pulse_width_publisher_ = this->create_publisher<std_msgs::msg::Int32>("traxxas_steering_trim_current_pulse_width", 10);
 
             // Timer callback for the synchronous FSM
             timer_ = this->create_wall_timer(std::chrono::milliseconds(TRAXXAS_FSM_CYCLE_PERIOD_IN_MILLISECS), std::bind(&TraxxasNode::timerCallback, this));
@@ -355,7 +355,7 @@ class TraxxasNode : public rclcpp::Node {
             state_publisher_->publish(traxxas_state_message);
 
             // Publish the current steering trim
-            auto steering_trim_message = std_msgs::msg::UInt16();
+            auto steering_trim_message = std_msgs::msg::Int32();
             steering_trim_message.data = steering_trim;
             current_steering_trim_pulse_width_publisher_->publish(steering_trim_message);
         }
@@ -588,7 +588,7 @@ class TraxxasNode : public rclcpp::Node {
         rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_publisher_;
         rclcpp::Publisher<std_msgs::msg::UInt16>::SharedPtr current_esc_pulse_width_publisher_;
         rclcpp::Publisher<std_msgs::msg::UInt16>::SharedPtr current_steering_pulse_width_publisher_;
-        rclcpp::Publisher<std_msgs::msg::UInt16>::SharedPtr current_steering_trim_pulse_width_publisher_;
+        rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr current_steering_trim_pulse_width_publisher_;
 
         OnSetParametersCallbackHandle::SharedPtr callback_handle_;
 

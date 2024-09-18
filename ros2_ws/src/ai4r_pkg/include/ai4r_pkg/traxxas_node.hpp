@@ -13,6 +13,7 @@
 #include "std_msgs/msg/u_int8.hpp"
 #include "std_msgs/msg/u_int16.hpp"
 #include "std_msgs/msg/int16.hpp"
+#include "std_msgs/msg/int32.hpp"
 
 // ai4r custom message types
 #include "ai4r_interfaces/msg/esc_and_steering_percent.hpp"
