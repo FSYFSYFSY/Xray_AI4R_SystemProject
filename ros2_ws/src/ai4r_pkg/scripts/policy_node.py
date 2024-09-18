@@ -50,6 +50,8 @@ class PolicyNode(Node):
         self.fsm_state_publisher_ = self.create_publisher(String, 'policy_fsm_state', 10)
         # > For publishing the policy actions
         self.policy_action_publisher_ = self.create_publisher(EscAndSteeringPercent, 'esc_and_steering_set_point_percent_action', 10)
+        # > For publishing the IMU heading angle
+        self.imu_heading_angle_publisher_ = self.create_publisher(Float32, 'imu_heading_angle', 10)
         # > For publishing debug1 messages
         self.debug1_publisher_ = self.create_publisher(Float32, 'debug1', 10)
         # > For publishing debug2 messages
@@ -306,6 +308,11 @@ class PolicyNode(Node):
     def imu_callback(self, msg):
         # Extract the heading angle into the class variable
         self.heading_angle_from_imu = msg.roll
+
+        # Publish the heading angle
+        msg = Float32()
+        msg.data = self.heading_angle_from_imu 
+        self.imu_heading_angle_publisher_.publish(msg)
 
 
 
