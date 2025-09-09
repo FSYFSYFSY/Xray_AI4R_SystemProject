@@ -48,9 +48,9 @@ class SensorPcbParserNode: public rclcpp::Node
                             token = strtok(NULL," ");
                             if(!strcmp(token,"G\0")) {                            
                                 msg.usec_since_last_gyro_msg = atoll(strtok(NULL," ")); 
-                                msg.roll = atof(strtok(NULL," ")); 
+                                msg.yaw = atof(strtok(NULL," ")); 
                                 msg.pitch = atof(strtok(NULL," "));
-                                msg.yaw =  atof(strtok(NULL," "));
+                                msg.roll =  atof(strtok(NULL," "));
                                 
                             } else if (!strcmp(token,"A\0")) {
                                 msg.usec_since_last_accel_msg = atoll(strtok(NULL," ")); 
