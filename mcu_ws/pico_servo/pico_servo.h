@@ -53,4 +53,18 @@ servo_disable(const uint gpio_pin);
 int
 servo_set_position(const uint gpio_pin, const uint16_t degree);
 
+/**
+ * Sets the pulse width of the servo signal in microseconds.
+ * Typical range: 1000..2000 us (will be clamped if out of range).
+ * This uses the current PWM configuration (frequency/divider) to compute
+ * the closest achievable duty level and enables the PWM output.
+ *
+ * @param gpio_pin: the GPIO pin the servo is attached to
+ * @param pulse_us: pulse width in microseconds
+ *
+ * @return non-zero on success
+ */
+int
+servo_set_pulse_us(const uint gpio_pin, uint16_t pulse_us);
+
 #endif

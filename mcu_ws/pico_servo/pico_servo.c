@@ -105,3 +105,27 @@ servo_set_position(const uint gpio_pin, const uint16_t degree)
 
     return true;
 }
+
+int
+servo_set_pulse_us(const uint gpio_pin, uint16_t pulse_us)
+{
+    // Clamp to a reasonable range; typical servos accept ~1000..2000us
+    if (pulse_us < 1000) pulse_us = 1000;
+    if (pulse_us > 2000) pulse_us = 2000;
+
+    // TODO check if integer division is of any practical relevance
+    const uint32_t oneMs = SERVO_TOP_MAX / 20u;
+    const uint32_t duty_ticks = oneMs + (oneMs * (uint32_t)(pulse_us - 1000u)) / 1000u;
+    const uint16_t duty_u16 = (uint16_t)duty_ticks;
+
+    const uint8_t slice = pwm_gpio_to_slice_num(gpio_pin);
+    const uint8_t channel = pwm_gpio_to_channel(gpio_pin);
+
+    const uint32_t top = pwm_hw->slice[slice].top;
+    const uint32_t cc = duty_u16 * (top + 1) / SERVO_TOP_MAX;
+
+    pwm_set_chan_level(slice, channel, cc);
+    pwm_set_enabled(slice, true);
+
+    return 1;
+}

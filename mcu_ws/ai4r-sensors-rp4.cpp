@@ -4,8 +4,8 @@
 #include "hardware/pwm.h"
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
-//#include "PwmIn.pio.h"
-#include "HighLowDurationReader.pio.h"
+#include "PwmIn.pio.h"
+//#include "encodertime.pio.h"
 #include "ws2812.pio.h"
 #include <cstring>
 #include <math.h>
@@ -216,15 +216,15 @@ extern "C" {
 ###############################################################################
 */
 
-class HighLowDurationReader
+class PwmIn
 {
 public:
     // constructor
     // input = pin that receives the PWM pulses.
-    HighLowDurationReader(uint input) {
+    PwmIn(uint input) {
         // can claim a maximum of 4 state machines on pio0 
         // could be extended to use pio1 for 8 state machines
-        pio = pio1;
+        pio = pio0;
         sm = pio_claim_unused_sm(pio, false);
         if (sm == -1) {
             // no free state machine on pio0, try pio1
@@ -235,9 +235,9 @@ public:
         // configure the used pins
         pio_gpio_init(pio, input);
         // load the pio program into the pio memory
-        uint offset = pio_add_program(pio, &HighLowDurationReader_program);
+        uint offset = pio_add_program(pio, &PwmIn_program);
         // make a sm config
-        pio_sm_config c = HighLowDurationReader_program_get_default_config(offset);
+        pio_sm_config c = PwmIn_program_get_default_config(offset);
         // set the 'jmp' pin
         sm_config_set_jmp_pin(&c, input);
         // set the 'wait' pin (uses 'in' pins)
@@ -392,7 +392,7 @@ int main() {
 
     // Initialise the pins
     // > For speed sensor channel only (PWM on SPEED_SENSOR_INPUT_PIN)
-    //HighLowDurationReader speed_sensor_high_low_duration_reader(SPEED_SENSOR_INPUT_PIN);
+    PwmIn my_PwmInD(SPEED_SENSOR_INPUT_PIN);
 
     // > For drive and steer
     servo_enable(DRIVE_OUTPUT_PIN);
@@ -428,8 +428,8 @@ int main() {
         servo_set_pulse_us(DRIVE_OUTPUT_PIN, g_cmd_drive_us);
         servo_set_pulse_us(STEER_OUTPUT_PIN, g_cmd_steer_us);
 
-        //float dcD = speed_sensor_high_low_duration_reader.read_dutycycle();
-        //float period_s = speed_sensor_high_low_duration_reader.read_period();
+        float dcD = my_PwmInD.read_dutycycle();
+        float period_s = my_PwmInD.read_period();
 
         // uint32_t mode_val = gpio_get(MODE_PIN) ? 1u : 0u;
         // // Test mode: synthesize values
@@ -449,7 +449,6 @@ int main() {
         // }
         #endif
 
-        #if RP2_TELEMETRY
         // Poll and print the RC Switch Pins at regular intervals
         counter_for_rc_switch++;
         if (counter_for_rc_switch >= 200) {
@@ -461,7 +460,6 @@ int main() {
             // Reset the counter
             counter_for_rc_switch = 0;
         }
-        #endif
 
         // 1ms loop for LED timing
         sleep_ms(1);

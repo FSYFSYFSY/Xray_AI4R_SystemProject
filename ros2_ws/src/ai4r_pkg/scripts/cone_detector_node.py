@@ -39,10 +39,10 @@ DETECTOR_QUEUE_SIZE = 1
 STRETCH = True
 
 if STRETCH:
-    NN_BLOB_PATH = '/home/ai4r/ai4r-system/ros2_ws/src/ai4r_pkg/scripts/models/yolov8n_cones_3510_yb_st_100_5s.blob'
+    NN_BLOB_PATH = '/home/asc/ai4r-system/ros2_ws/src/ai4r_pkg/scripts/models/yolov8n_cones_3510_yb_st_100_5s.blob'
     PREVIEW_KEEP_ASPECT_RATIO = False
 else:
-    NN_BLOB_PATH = '/home/ai4r/ai4r-system/ros2_ws/src/ai4r_pkg/scripts/models/yolov8n_det_3510_yb_5s.blob'
+    NN_BLOB_PATH = '/home/asc/ai4r-system/ros2_ws/src/ai4r_pkg/scripts/models/yolov8n_det_3510_yb_5s.blob'
     PREVIEW_KEEP_ASPECT_RATIO = True
 
 SYNCNN = True
@@ -81,6 +81,7 @@ class SpatialConeDetectorNode(Node):
         if "--preview" in args:
             global PREVIEW_STREAM 
             PREVIEW_STREAM = True
+            self.get_logger().info(f"[INFO] launched with --preview flag, hence variable PREVIEW_STREAM = {PREVIEW_STREAM}")
         # For storing the toggle state of the bounding box image streaming. Default is NOT streaming.
         self.bbox_img_stream_on = PREVIEW_STREAM
         # For subscribing to the bounding box streaming toggle topic
@@ -101,6 +102,8 @@ class SpatialConeDetectorNode(Node):
         if "--depth" in args:
             global DEPTH_STREAM 
             DEPTH_STREAM = True
+            self.get_logger().info(f"[INFO] launched with --depth flag, hence variable DEPTH_STREAM = {DEPTH_STREAM}")
+
         # For storing the toggle state of the depth image streaming. Default is NOT streaming.
         self.depth_img_stream_on = DEPTH_STREAM
         # For subscribing to the depth image streaming toggle topic
@@ -338,27 +341,33 @@ class SpatialConeDetectorNode(Node):
                 cv2.putText(frame, f"Z: {z_w/10:.2f} cm", (x1 + 10, y1 + 80), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), cv2.FONT_HERSHEY_SIMPLEX)
             
-            # Streaming Depth Frame
-            if DEPTH_STREAM: 
-                depth_downscaled = depth_frame[::4]
-                if np.all(depth_downscaled == 0):
-                    min_depth = 0  # Set a default minimum depth value when all elements are zero
-                else:
-                    min_depth = np.percentile(depth_downscaled[depth_downscaled != 0], 1)
-                max_depth = np.percentile(depth_downscaled, 99)
-                depthFrameColor = np.interp(depth_frame, (min_depth, max_depth), (0, 255)).astype(np.uint8)
-                depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
+        # Streaming Depth Frame
+        if DEPTH_STREAM: 
+            depth_downscaled = depth_frame[::4]
+            if np.all(depth_downscaled == 0):
+                min_depth = 0  # Set a default minimum depth value when all elements are zero
+            else:
+                min_depth = np.percentile(depth_downscaled[depth_downscaled != 0], 1)
+            max_depth = np.percentile(depth_downscaled, 99)
+            depthFrameColor = np.interp(depth_frame, (min_depth, max_depth), (0, 255)).astype(np.uint8)
+            depthFrameColor = cv2.applyColorMap(depthFrameColor, cv2.COLORMAP_HOT)
 
         if self.bbox_img_stream_on:
-            # Publish the grayscale bounding box (preview) image to the topic /bbox_image
-            frame_mono = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            self.bbox_img_pub.publish(self.cv_bridge.cv2_to_imgmsg(frame_mono, "mono8"))
+            if frame is None or getattr(frame, "size", 0) == 0:
+                self.get_logger().warn(f"[WARN] frame is empty. Relaunch with flag: --preview")
+            else:
+                # Publish the grayscale bounding box (preview) image to the topic /bbox_image
+                frame_mono = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                self.bbox_img_pub.publish(self.cv_bridge.cv2_to_imgmsg(frame_mono, "mono8"))
         if self.depth_img_stream_on:
             # Publish the grayscale depth image to the topic /depth_image
             # depth_mono = cv2.cvtColor(depthFrameColor, cv2.COLOR_BGR2GRAY)
             # self.depth_img_pub.publish(self.cv_bridge.cv2_to_imgmsg(depth_mono, "mono8"))
             # Publish the color depth image to the topic /depth_image
-            self.depth_img_pub.publish(self.cv_bridge.cv2_to_imgmsg(depthFrameColor, "bgr8"))
+            if depthFrameColor is None or getattr(depthFrameColor, "size", 0) == 0:
+                self.get_logger().warn(f"[WARN] depth frame is empty. Relaunch with flag: --depth")
+            else:
+                self.depth_img_pub.publish(self.cv_bridge.cv2_to_imgmsg(depthFrameColor, "bgr8"))
         
         # self.get_logger().info(f"{number_of_cones} cones detected!")
 

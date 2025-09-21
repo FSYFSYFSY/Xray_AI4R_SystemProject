@@ -1,4 +1,57 @@
 #include "ai4r_pkg/traxxas_node.hpp"
+#include <algorithm>
+#include <string>
+
+#ifdef TRAXXAS_USE_PICO_RP2
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <dirent.h>
+#include <limits.h>
+#include <thread>
+#include <unistd.h>
+#endif
+
+#ifdef TRAXXAS_USE_PICO_RP2
+namespace {
+std::string find_serial_device_by_path_substr(const std::string &substr) {
+    const char *dirpath = "/dev/serial/by-path";
+    DIR *dir = opendir(dirpath);
+    if (!dir) {
+        return {};
+    }
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+        std::string name(ent->d_name);
+        if (name.find(substr) != std::string::npos) {
+            std::string linkpath = std::string(dirpath) + "/" + name;
+            char buf[PATH_MAX];
+            ssize_t n = readlink(linkpath.c_str(), buf, sizeof(buf) - 1);
+            if (n > 0) {
+                buf[n] = '\0';
+                std::string rel(buf);
+                std::string devpath;
+                if (rel.rfind("../", 0) == 0) {
+                    devpath = std::string("/dev/") + rel.substr(rel.find_last_of('/') + 1);
+                } else if (rel.rfind("/dev/", 0) == 0) {
+                    devpath = rel;
+                } else {
+                    devpath = std::string("/dev/") + rel;
+                }
+                closedir(dir);
+                return devpath;
+            }
+        }
+    }
+    closedir(dir);
+    return {};
+}
+}  // namespace
+#endif
 
 class TraxxasNode : public rclcpp::Node {
     public:
@@ -52,10 +105,24 @@ class TraxxasNode : public rclcpp::Node {
             current_steering_pulse_width_publisher_ = this->create_publisher<std_msgs::msg::UInt16>("traxxas_steering_current_pulse_width", 1000);
             // Publisher for the latest steering trim
             current_steering_trim_pulse_width_publisher_ = this->create_publisher<std_msgs::msg::Int32>("traxxas_steering_trim_current_pulse_width", 10);
+            // Publish the values from the RC switch
+            rc_switch_good_signal_publisher_ = this->create_publisher<std_msgs::msg::Int8>("rc_signal_validity", 10);
+            rc_switch_mode_signal_publisher_ = this->create_publisher<std_msgs::msg::Int8>("operating_mode", 10);
+            rc_switch_request_publisher_ = this->create_publisher<std_msgs::msg::UInt8>("request", 10);
+
 
             // Timer callback for the synchronous FSM
             timer_ = this->create_wall_timer(std::chrono::milliseconds(TRAXXAS_FSM_CYCLE_PERIOD_IN_MILLISECS), std::bind(&TraxxasNode::timerCallback, this));
 
+
+#ifdef TRAXXAS_USE_PICO_RP2
+            serial_by_path_substr_ = this->declare_parameter<std::string>("pico_serial_by_path_substr", kDefaultByPathSubstr);
+            open_serial();
+            running_.store(true);
+            reader_ = std::thread([this]() { this->read_loop(); });
+#else
+            // ================================================
+            // I2C INITIALIZATION CODE
             // Open the I2C device
             // > Note that the I2C driver is already instantiated
             //   as a member variable of this node
@@ -78,11 +145,30 @@ class TraxxasNode : public rclcpp::Node {
             bool result_servo_init = m_pca9685_servo_driver.initialise_with_frequency_in_hz(new_frequency_in_hz, verbose_display_for_servo_driver_init);
             
             // Report Servo Board Initialisation Result
-            if (!result_servo_init)	{
+            if (!result_servo_init) {
                 RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] FAILED - while initialising servo driver with I2C address " << static_cast<int>(m_pca9685_servo_driver.get_i2c_address()) );
             } else {
                 RCLCPP_INFO_STREAM(this->get_logger(), "[TRAXXAS] SUCCESS - while initialising servo driver with I2C address " << static_cast<int>(m_pca9685_servo_driver.get_i2c_address()) );
             }
+            // END OF: I2C INITIALIZATION CODE
+#endif
+        }
+
+        ~TraxxasNode() override {
+#ifdef TRAXXAS_USE_PICO_RP2
+            running_.store(false);
+            if (reader_.joinable()) {
+                reader_.join();
+            }
+            if (fp_in_) {
+                std::fclose(fp_in_);
+                fp_in_ = nullptr;
+            }
+            if (fp_out_) {
+                std::fclose(fp_out_);
+                fp_out_ = nullptr;
+            }
+#endif
         }
 
     private:
@@ -190,7 +276,9 @@ class TraxxasNode : public rclcpp::Node {
                         traxxas_state = Traxxas_State::Calibrate;
                         reason_for_previous_state_transition = "Received request- Perform calibration";
                         RCLCPP_INFO_STREAM(this->get_logger(), "Transition to Calibrate | Received request: Perform calibration" );
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Now applying full forward ESC command" );
                         calibrate_stage = Calibrate_Stage::Full_Forward;    // Enter first stage of Traxxas_State::Calibrate
+                        calibrate_fsm_cycle_count = 0;  // Reset the cycle count
                     }
                     break;
                 case Traxxas_State::Calibrate:
@@ -214,12 +302,14 @@ class TraxxasNode : public rclcpp::Node {
                     break;
                 case Calibrate_Stage::Full_Forward:
                     if (calibrate_fsm_cycle_count*(1.0) > (CALIBRATE_FULL_FORWARD_PERIOD_IN_MILLISECS*(1.0))/(TRAXXAS_FSM_CYCLE_PERIOD_IN_MILLISECS*(1.0))) {
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Now applying full reverse ESC command" );
                         calibrate_stage = Calibrate_Stage::Full_Reverse;
                         calibrate_fsm_cycle_count = 0;  // Reset the cycle count
                     }
                     break;
                 case Calibrate_Stage::Full_Reverse:
                     if (calibrate_fsm_cycle_count*(1.0) > (CALIBRATE_FULL_REVERSE_PERIOD_IN_MILLISECS*(1.0))/(TRAXXAS_FSM_CYCLE_PERIOD_IN_MILLISECS*(1.0))) {
+                        RCLCPP_INFO_STREAM(this->get_logger(), "Now applying neutral ESC command" );
                         calibrate_stage = Calibrate_Stage::Complete;
                         calibrate_fsm_cycle_count = 0;  // Reset the cycle count
                     }
@@ -233,12 +323,10 @@ class TraxxasNode : public rclcpp::Node {
                 case Traxxas_State::Disabled:
                     //RCLCPP_INFO_STREAM(this->get_logger(), "DISABLED" );
                     // Set ESC and steering back to neutral position
-                    // esc_set_point = esc_neutral_pulse_width_;
                     esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
-                    setEscPulseWidth();
-                    // steering_set_point = steering_neutral_pulse_width_;
-                    steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
-                    setSteeringPulseWidth();
+                    //steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
+                    // Call the function to set the pulse widths
+                    setEscAndSteeringPulseWidth();
                     // Action timeout counters should be 0 
                     steering_empty_msg_count = 0;
                     esc_empty_msg_count = 0;
@@ -248,12 +336,10 @@ class TraxxasNode : public rclcpp::Node {
                 case Traxxas_State::Pre_enable:
                     //RCLCPP_INFO_STREAM(this->get_logger(), "PRE-ENABLE" );
                     // Set ESC and steering back to neutral position
-                    // esc_set_point = esc_neutral_pulse_width_;
                     esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
-                    setEscPulseWidth();
-                    // steering_set_point = steering_neutral_pulse_width_;
-                    steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
-                    setSteeringPulseWidth();
+                    //steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
+                    // Call the function to set the pulse widths
+                    setEscAndSteeringPulseWidth();
                     // Action timeout counters should be 0 
                     steering_empty_msg_count = 0;
                     esc_empty_msg_count = 0;
@@ -262,9 +348,8 @@ class TraxxasNode : public rclcpp::Node {
                     break;
                 case Traxxas_State::Enabled:
                     //RCLCPP_INFO_STREAM(this->get_logger(), "ENABLED" );
-                    // Send messages to the motors
-                    setSteeringPulseWidth();
-                    setEscPulseWidth();
+                    // Call the function to set the pulse widths
+                    setEscAndSteeringPulseWidth();
                     // Only if wheels are spinning, increment the timeout counters
                     // if (latest_esc_command != esc_neutral_pulse_width_) {
                     if (latest_esc_command != DEFAULT_ESC_NEUTRAL_PULSE_WIDTH) {
@@ -278,12 +363,10 @@ class TraxxasNode : public rclcpp::Node {
                 case Traxxas_State::Pre_calibrate:
                     //RCLCPP_INFO_STREAM(this->get_logger(), "PRE-CALIBRATE" );
                     // Set ESC and steering back to neutral position
-                    // esc_set_point = esc_neutral_pulse_width_;
                     esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
-                    setEscPulseWidth();
-                    // steering_set_point = steering_neutral_pulse_width_;
                     steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
-                    setSteeringPulseWidth();
+                    // Call the function to set the pulse widths
+                    setEscAndSteeringPulseWidth();
                     // Action timeout counters should be 0 
                     steering_empty_msg_count = 0;
                     esc_empty_msg_count = 0;
@@ -293,30 +376,28 @@ class TraxxasNode : public rclcpp::Node {
                 case Traxxas_State::Calibrate:
                     //RCLCPP_INFO_STREAM(this->get_logger(), "CALIBRATE" );
                     // Set steering to neutral position
-                    // steering_set_point = steering_neutral_pulse_width_;
                     steering_set_point = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
-                    setSteeringPulseWidth();
                     // ESC calibration
                     switch (calibrate_stage) {
                         case Calibrate_Stage::Inactive:
+                            esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
                             break;
                         case Calibrate_Stage::Full_Forward:
                             // Full forward
                             esc_set_point = ESC_MAXIMUM_PULSE_WIDTH;
-                            setEscPulseWidth();
                             break;
                         case Calibrate_Stage::Full_Reverse:
                             // Full reverse
                             esc_set_point = ESC_MINIMUM_PULSE_WIDTH;
-                            setEscPulseWidth();
                             break;
                         case Calibrate_Stage::Complete:
                             // Neutral (setting ESC to neutral is necessary to complete calibration)
                             // esc_set_point = esc_neutral_pulse_width_;
                             esc_set_point = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
-                            setEscPulseWidth();
                             break;
                     }
+                    // Call the function to set the pulse widths
+                    setEscAndSteeringPulseWidth();
                     // Action timeout counters should be 0 
                     steering_empty_msg_count = 0;
                     esc_empty_msg_count = 0;
@@ -360,13 +441,11 @@ class TraxxasNode : public rclcpp::Node {
             current_steering_trim_pulse_width_publisher_->publish(steering_trim_message);
         }
 
+#ifndef TRAXXAS_USE_PICO_RP2
+        // ================================================
+        // I2C PWM SEND FUNCTION
         // Send a pulse width on the specified channel.
-        void setPWMSignal(uint16_t channel, uint16_t pulse_width_in_us) {
-            // Add the steering trim if sending to the steering servo
-            if (channel == STEERING_SERVO_CHANNEL) {
-                pulse_width_in_us += steering_trim;
-            }
-
+        void setPWMSignalViaI2c(uint16_t channel, uint16_t pulse_width_in_us) {
             // Call the function to set the desired pulse width
             bool result = m_pca9685_servo_driver.set_pwm_pulse_in_microseconds(channel, pulse_width_in_us);
 
@@ -388,6 +467,134 @@ class TraxxasNode : public rclcpp::Node {
                 }
             }
         }
+        // END OF: I2C PWM SEND FUNCTION
+        // ================================================
+#endif
+
+#ifdef TRAXXAS_USE_PICO_RP2
+        void send_cmd_via_pico(uint16_t esc_us, uint16_t steering_us) {
+            pico_drive_us_ = esc_us;
+            pico_steer_us_ = steering_us;
+            if (!fp_out_) {
+                RCLCPP_WARN_ONCE(this->get_logger(), "[TRAXXAS] RP2 serial not open; skipping PWM command");
+                return;
+            }
+            std::fprintf(fp_out_, "RP2 CMD %u %u\n", static_cast<unsigned>(pico_drive_us_), static_cast<unsigned>(pico_steer_us_));
+            std::fflush(fp_out_);
+
+            auto esc_msg = std_msgs::msg::UInt16();
+            esc_msg.data = pico_drive_us_;
+            current_esc_pulse_width_publisher_->publish(esc_msg);
+
+            auto steering_msg = std_msgs::msg::UInt16();
+            steering_msg.data = pico_steer_us_;
+            current_steering_pulse_width_publisher_->publish(steering_msg);
+        }
+
+        void open_serial() {
+            std::string dev;
+            if (!serial_by_path_substr_.empty()) {
+                dev = find_serial_device_by_path_substr(serial_by_path_substr_);
+            }
+            if (dev.empty()) {
+                dev = "/dev/ttyACM0";
+            }
+
+            fp_in_ = std::fopen(dev.c_str(), "r");
+            if (!fp_in_) {
+                RCLCPP_ERROR(this->get_logger(), "[TRAXXAS] Failed to open RP2 serial device for read: %s", dev.c_str());
+                return;
+            }
+            fp_out_ = std::fopen(dev.c_str(), "w");
+            if (!fp_out_) {
+                RCLCPP_ERROR(this->get_logger(), "[TRAXXAS] Failed to open RP2 serial device for write: %s", dev.c_str());
+                std::fclose(fp_in_);
+                fp_in_ = nullptr;
+                return;
+            }
+            std::setvbuf(fp_out_, nullptr, _IONBF, 0);
+            RCLCPP_INFO(this->get_logger(), "[TRAXXAS] Opened RP2 serial device: %s", dev.c_str());
+        }
+
+        void read_loop() {
+            if (!fp_in_) {
+                return;
+            }
+            // Static variable for the previous mode value
+            static uint8_t prev_mode_value = 0;
+            // Inistialize the buffer
+            char buf[256];
+            // Enter the endless reading loop
+            while (rclcpp::ok() && running_.load()) {
+                if (!std::fgets(buf, sizeof(buf), fp_in_)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    continue;
+                }
+                if (buf[0] == '\0' || buf[0] == '\n') {
+                    continue;
+                }
+
+                // Debugging print
+                //RCLCPP_DEBUG(this->get_logger(), "[TRAXXAS] read_loop received: %s", buf);
+
+                char *token = std::strtok(buf, " \r\n");
+                if (!token) {
+                    continue;
+                }
+
+                if (std::strcmp(token, "RCS") == 0) {
+                    // Extract the data
+                    uint8_t good_value = std::atoi(std::strtok(nullptr, " \r\n"));
+                    uint8_t mode_value = std::atoi(std::strtok(nullptr, " \r\n"));
+                    // Publish the values
+                    auto good_msg = std_msgs::msg::Int8();
+                    auto mode_msg = std_msgs::msg::Int8();
+                    good_msg.data = good_value;
+                    mode_msg.data = mode_value;
+                    rc_switch_good_signal_publisher_->publish(good_msg);
+                    rc_switch_mode_signal_publisher_->publish(mode_msg);
+
+                    // Publish a disable or enable request if the mode value changed
+                    if (prev_mode_value != mode_value) {
+                        if (mode_value == 0) {
+                            // Publish the disable message if MANUAL mode is selected
+                            auto disable_message = std_msgs::msg::UInt8();
+                            disable_message.data = 0;
+                            rc_switch_request_publisher_->publish(disable_message);
+                        } else if (mode_value == 1) {
+                            // // Publish the enable message if AUTONOMOUS mode is selected
+                            // auto enable_message = std_msgs::msg::UInt8();
+                            // enable_message.data = 1;
+                            // rc_switch_request_publisher_->publish(enable_message);
+                        }
+                    }
+                    // Update the previous value of the mode
+                    prev_mode_value = mode_value;
+                }
+                // else if (std::strcmp(token, "SPD\0") == 0 || std::strcmp(token, "SPD") == 0) {
+                //   char *tof_tok = std::strtok(nullptr, " ");
+                //   if (!tof_tok) {
+                //     continue;
+                //   }
+                //   int tof_num = std::atoi(tof_tok);
+                //   ai4r_interfaces::msg::TofSensor msg;
+                //   msg.usec_since_last_msg = std::atoll(std::strtok(nullptr, " "));
+                //   for (int i = 0; i < 16; i++) {
+                //     char *d = std::strtok(nullptr, " ");
+                //     if (!d) {
+                //       break;
+                //     }
+                //     msg.distance_mm[i] = std::atoi(d);
+                //   }
+                //   msg.sensor_id = static_cast<uint16_t>(tof_num);
+                //   tof_topic_pub_->publish(msg);
+                // }
+                else {
+                    RCLCPP_INFO(this->get_logger(), "[TRAXXAS] Receive unrecognised data in USB serial read loop");
+                }
+            }
+        }
+#endif
 
         // Convert percentage to PWM
         uint16_t percentageToPulseWidth(float percent_value, uint16_t minimum_pw, uint16_t maximum_pw) {
@@ -411,13 +618,14 @@ class TraxxasNode : public rclcpp::Node {
             return pulse_width;
         }
 
-        // Send steering PWM one step closer to the set point
-        void setSteeringPulseWidth() {
-            // See if the set point is at a distance greater than the defined step away from the latest command. 
-            // If it is, increment the command by the step amount towards the direction of the set point. 
-            // Otherwise, the command is exactly the set point.
-            if(abs(steering_set_point - latest_steering_command) > steering_pulse_width_step_) {
-                if(steering_set_point > latest_steering_command) {
+        void setEscAndSteeringPulseWidth() {
+            // STEERING
+            // - Send steering PWM one step closer to the set point
+            // - See if the set point is at a distance greater than the defined step away from the latest command.
+            //   - If it is, increment the command by the step amount towards the direction of the set point.
+            //   - Otherwise, the command is exactly the set point.
+            if (abs(steering_set_point - latest_steering_command) > steering_pulse_width_step_) {
+                if (steering_set_point > latest_steering_command) {
                     latest_steering_command += steering_pulse_width_step_;
                 } else {
                     latest_steering_command -= steering_pulse_width_step_;
@@ -426,16 +634,20 @@ class TraxxasNode : public rclcpp::Node {
                 latest_steering_command = steering_set_point;
             }
 
-            setPWMSignal(STEERING_SERVO_CHANNEL, latest_steering_command);
-        }
+            // Add the steering trim if sending to the steering servo and clamp within servo limits
+            int steering_command_with_trim = latest_steering_command + steering_trim;
+            int steering_command_to_send = std::clamp(
+                steering_command_with_trim,
+                static_cast<int>(STEERING_MINIMUM_PULSE_WIDTH),
+                static_cast<int>(STEERING_MAXIMUM_PULSE_WIDTH));
 
-        // Send ESC PWM one step closer to the set point
-        void setEscPulseWidth() {
-            // See if the set point is at a distance greater than the defined step away from the latest command.
-            // If it is, increment the command by the step amount towards the direction of the set point.
-            // Otherwise, the command is exactly the set point.
-            if(abs(esc_set_point - latest_esc_command) > esc_pulse_width_step_) {
-                if(esc_set_point > latest_esc_command) {
+            // ESC
+            // - Send ESC PWM one step closer to the set point
+            // - See if the set point is at a distance greater than the defined step away from the latest command.
+            //   - If it is, increment the command by the step amount towards the direction of the set point.
+            //   - Otherwise, the command is exactly the set point.
+            if (abs(esc_set_point - latest_esc_command) > esc_pulse_width_step_) {
+                if (esc_set_point > latest_esc_command) {
                     latest_esc_command += esc_pulse_width_step_;
                 } else {
                     latest_esc_command -= esc_pulse_width_step_;
@@ -444,7 +656,18 @@ class TraxxasNode : public rclcpp::Node {
                 latest_esc_command = esc_set_point;
             }
 
-            setPWMSignal(ESC_SERVO_CHANNEL, latest_esc_command);
+            int esc_command_to_send = std::clamp(
+                latest_esc_command,
+                static_cast<int>(ESC_MINIMUM_PULSE_WIDTH),
+                static_cast<int>(ESC_MAXIMUM_PULSE_WIDTH));
+
+#ifdef TRAXXAS_USE_PICO_RP2
+            send_cmd_via_pico(static_cast<uint16_t>(esc_command_to_send),
+                              static_cast<uint16_t>(steering_command_to_send));
+#else
+            setPWMSignalViaI2c(ESC_SERVO_CHANNEL, static_cast<uint16_t>(esc_command_to_send));
+            setPWMSignalViaI2c(STEERING_SERVO_CHANNEL, static_cast<uint16_t>(steering_command_to_send));
+#endif
         }
 
         // For receiving percentage values to control both the steering (channel 0) and esc (channel 1) using the synchronous FSM
@@ -542,6 +765,15 @@ class TraxxasNode : public rclcpp::Node {
                 //         }
                 //     }
                 // }
+#ifdef TRAXXAS_USE_PICO_RP2
+                if (param.get_name() == "pico_serial_by_path_substr") {
+                    if (param.get_type() == rclcpp::ParameterType::PARAMETER_STRING) {
+                        serial_by_path_substr_ = param.as_string();
+                        result.successful = true;
+                    }
+                }
+#endif
+
                 if (param.get_name() == "steering_pulse_width_step") {
                     if (param.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER) {
                         steering_pulse_width_step_ = param.as_int();
@@ -589,8 +821,22 @@ class TraxxasNode : public rclcpp::Node {
         rclcpp::Publisher<std_msgs::msg::UInt16>::SharedPtr current_esc_pulse_width_publisher_;
         rclcpp::Publisher<std_msgs::msg::UInt16>::SharedPtr current_steering_pulse_width_publisher_;
         rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr current_steering_trim_pulse_width_publisher_;
+        rclcpp::Publisher<std_msgs::msg::Int8>::SharedPtr rc_switch_good_signal_publisher_;
+        rclcpp::Publisher<std_msgs::msg::Int8>::SharedPtr rc_switch_mode_signal_publisher_;
+        rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr rc_switch_request_publisher_;
 
         OnSetParametersCallbackHandle::SharedPtr callback_handle_;
+
+#ifdef TRAXXAS_USE_PICO_RP2
+        std::string serial_by_path_substr_;
+        std::FILE *fp_in_ = nullptr;
+        std::FILE *fp_out_ = nullptr;
+        std::thread reader_{};
+        std::atomic<bool> running_{false};
+        uint16_t pico_drive_us_ = DEFAULT_ESC_NEUTRAL_PULSE_WIDTH;
+        uint16_t pico_steer_us_ = DEFAULT_STEERING_NEUTRAL_PULSE_WIDTH;
+        static constexpr const char kDefaultByPathSubstr[] = "usb-0:1.4";
+#endif
 
 };
 
@@ -599,6 +845,7 @@ int main(int argc, char** argv) {
     auto node = std::make_shared<TraxxasNode>();
     rclcpp::spin(node); // Use rclcpp::spin() to handle callbacks.
 
+#ifndef TRAXXAS_USE_PICO_RP2
 	// Close the I2C device
 	bool close_success = m_i2c_driver.close_i2c_device();
 	
@@ -608,6 +855,7 @@ int main(int argc, char** argv) {
 	} else {
 		RCLCPP_INFO_STREAM(node->get_logger(), "[TRAXXAS] Successfully closed device named " << m_i2c_driver.get_device_name());
 	}
+#endif
     
     rclcpp::shutdown();
     return 0;
