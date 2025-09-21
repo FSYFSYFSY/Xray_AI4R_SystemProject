@@ -35,10 +35,14 @@
 #include <stdio.h>
 // #include <sys/ioctl.h>
 #include <unistd.h>
-
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "vl53l5cx/platform/vl53l5cx_platform.h"
 #include "vl53l5cx/VL53L5CX_ULD_API/inc/vl53l5cx_api.h"
-// #include "vl53l5cx/VL53L5CX_ULD_API/inc/vl53l5cx_plugin_xtalk.h
+#ifdef __cplusplus
+}
+#endif
 // #include "vl53l5cx/VL53L5CX_ULD_API/inc/vl53l5cx_plugin_detection_thresholds.h
 // #include "vl53l5cx/VL53L5CX_ULD_API/inc/vl53l5cx_plugin_motion_indicator.h
 // #include "vl53l5cx/VL53L5CX_ULD_API/inc/vl53l5cx_buffers.h
@@ -259,3 +263,5 @@ public:
 
 
 #endif // VL53L5CX_CPP_INTERFACE_H
+
+

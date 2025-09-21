@@ -222,7 +222,7 @@ uint8_t VL53L5CX_RdMulti(
 
 		// Cast the number of read bytes to 16-bit
 		// becuase that is what "ioctl" expects
-		uint16_t num_read_bytes_uint16 = static_cast<uint16_t>(data_size);
+		uint16_t num_read_bytes_uint16 = (uint16_t)data_size;
 
 		// Create an array of "i2c_msg structs" with:
 		// > First message for the data to write

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.30)
+cmake_minimum_required(VERSION 3.28)
 # == DO NEVER EDIT THE NEXT LINES for Raspberry Pi Pico VS Code Extension to work ==
 if(WIN32)
     set(USERHOME $ENV{USERPROFILE})
@@ -14,7 +14,7 @@ if (EXISTS ${picoVscode})
 endif()
 # ====================================================================================
 set(PICO_BOARD pico CACHE STRING "Board type")
-set(PICO_SDK_FETCH_FROM_GIT 1)
+set(PICO_SDK_FETCH_FROM_GIT 0)
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
@@ -52,13 +52,13 @@ target_include_directories(ai4r-sensors-rp1 PRIVATE
 )
 
 add_subdirectory(BNO08x_Pico_Library)
-add_subdirectory(vl53l5cx_library)
+#add_subdirectory(vl53l5cx_library)
 
 # Add any user requested libraries
 target_link_libraries(ai4r-sensors-rp1
-        vl53l5cx
+        #vl53l5cx
         BNO08x_Pico_Library
-        pico_multicore
+        #pico_multicore
         hardware_i2c
         hardware_interp
         hardware_timer
@@ -78,7 +78,9 @@ pico_add_extra_outputs(ai4r-sensors-rp1)
 add_executable(ai4r-sensors-rp2 ai4r-sensors-rp2.cpp )
 add_subdirectory(pico_servo)
 
-pico_generate_pio_header(ai4r-sensors-rp2 ${CMAKE_CURRENT_LIST_DIR}/PwmIn.pio)
+#pico_generate_pio_header(ai4r-sensors-rp2 ${CMAKE_CURRENT_LIST_DIR}/PwmIn.pio)
+pico_generate_pio_header(ai4r-sensors-rp2 ${CMAKE_CURRENT_LIST_DIR}/HighLowDurationReader.pio)
+pico_generate_pio_header(ai4r-sensors-rp2 ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio)
 
 pico_set_program_name(ai4r-sensors-rp2 "ai4r-sensors-rp2")
 pico_set_program_version(ai4r-sensors-rp2 "0.1")
@@ -113,4 +115,3 @@ target_link_libraries(ai4r-sensors-rp2
         )
 
 pico_add_extra_outputs(ai4r-sensors-rp2)
-

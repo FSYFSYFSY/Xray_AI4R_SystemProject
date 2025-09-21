@@ -88,7 +88,7 @@ bool BNO08x::begin(uint8_t deviceAddress, i2c_inst_t* i2c_port)
   	if (isConnected() == false) // Check for sensor by verifying ACK response
     	return (false); 
 
-	  printf("I2C address found\n");
+	  printf("[bno08x driver] I2C address found\n");
     //delay(1000);
 
     _HAL.open = i2chal_open;

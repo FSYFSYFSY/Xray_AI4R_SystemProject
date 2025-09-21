@@ -12,7 +12,10 @@ find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(ai4r_interfaces REQUIRED)
+find_package(tf2_ros REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -78,6 +81,18 @@ add_executable(rc_switch_node src/rc_switch_node.cpp)
 ament_target_dependencies(rc_switch_node rclcpp std_msgs)
 target_link_libraries(rc_switch_node gpiod)
 
+add_executable(rp2_bridge_node src/rp2_bridge_node.cpp)
+ament_target_dependencies(rp2_bridge_node rclcpp std_msgs ai4r_interfaces)
+add_executable(vl53l5cx_node src/vl53l5cx_node.cpp
+                          drivers/src/i2c_driver/i2c_driver.cpp
+                          drivers/src/vl53l5cx/vl53l5cx.cpp
+                          drivers/src/vl53l5cx/platform/vl53l5cx_platform.c
+                          drivers/src/vl53l5cx/VL53L5CX_ULD_API/src/vl53l5cx_api.c
+                          drivers/src/vl53l5cx/VL53L5CX_ULD_API/src/vl53l5cx_plugin_detection_thresholds.c
+                          drivers/src/vl53l5cx/VL53L5CX_ULD_API/src/vl53l5cx_plugin_motion_indicator.c
+                          drivers/src/vl53l5cx/VL53L5CX_ULD_API/src/vl53l5cx_plugin_xtalk.c)
+ament_target_dependencies(vl53l5cx_node rclcpp ai4r_interfaces)
+
 # Install Cpp executables
 install(TARGETS
   minimal_cpp_executable
@@ -94,6 +109,8 @@ install(TARGETS
   traxxas
   rc_switch_node
   sensor_pcb_parser
+  rp2_bridge_node
+  vl53l5cx_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -120,6 +137,7 @@ install(PROGRAMS
   scripts/stream_oak_node.py
   scripts/cone_detector_node_old.py
   scripts/cone_detector_node.py
+  scripts/test_steering_commander.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -143,3 +161,6 @@ install(DIRECTORY
 )
 
 ament_package()
+
+
+

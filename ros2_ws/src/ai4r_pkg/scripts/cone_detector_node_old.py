@@ -35,10 +35,10 @@ DETECTOR_QUEUE_SIZE = 1
 STRETCH = True
 
 if STRETCH:
-    NN_BLOB_PATH = '/home/ai4r/ai4r-system/ros2_ws/src/ai4r_pkg/scripts/models/yolov8n_cones_3510_yb_st_100_5s.blob'
+    NN_BLOB_PATH = '/home/asc/ai4r-system/ros2_ws/src/ai4r_pkg/scripts/models/yolov8n_cones_3510_yb_st_100_5s.blob'
     PREVIEW_KEEP_ASPECT_RATIO = False
 else:
-    NN_BLOB_PATH = '/home/ai4r/ai4r-system/ros2_ws/src/ai4r_pkg/scripts/models/yolov8n_det_3510_yb_5s.blob'
+    NN_BLOB_PATH = '/home/asc/ai4r-system/ros2_ws/src/ai4r_pkg/scripts/models/yolov8n_det_3510_yb_5s.blob'
     PREVIEW_KEEP_ASPECT_RATIO = True
 
 STREAM_PREVIEW = False
