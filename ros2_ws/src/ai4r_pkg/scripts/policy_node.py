@@ -7,14 +7,17 @@ from ai4r_interfaces.msg import EscAndSteeringPercent
 from ai4r_interfaces.msg import ConePointsArray
 from ai4r_interfaces.msg import Imu
 from ai4r_interfaces.msg import TofSensor
-from std_msgs.msg import String, UInt16, Float32, Header
+from std_msgs.msg import String, Int8, UInt16, Float32, Header
 from rclpy.parameter import Parameter
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import PointCloud2, LaserScan
 from sensor_msgs_py.point_cloud2 import create_cloud_xyz32
 from geometry_msgs.msg import TransformStamped
 import tf2_ros
 
 import numpy as np
+
+# line predict
+from path_prediction import generate_middle_line
 
 FSM_STATE_NOT_PUBLISHING_ACTIONS   = 1
 FSM_STATE_PUBLISHING_ZERO_ACTIONS  = 2
@@ -52,7 +55,8 @@ class PolicyNode(Node):
 
         # Create ROS2 publishers
         # > For publishing the FSM state
-        self.fsm_state_publisher_ = self.create_publisher(String, 'policy_fsm_state', 10)
+        self.fsm_state_string_publisher_ = self.create_publisher(String, 'policy_fsm_state_string', 10)
+        self.fsm_state_value_publisher_ = self.create_publisher(Int8,   'policy_fsm_state_value', 10)
         # > For publishing the policy actions
         self.policy_action_publisher_ = self.create_publisher(EscAndSteeringPercent, 'esc_and_steering_set_point_percent_action', 10)
         # > For publishing the IMU heading angle
@@ -66,20 +70,31 @@ class PolicyNode(Node):
 
         # TF broadcaster for world->car and car->ToF frames
         self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+
         # Create ROS2 subscribers
         # > For subscribing to the CV cone detection data
         self.cv_subscription = self.create_subscription(ConePointsArray, 'cone_points', self.cv_cone_detection_callback, 10)
         # > For subscribing to requests to transition the state
         self.fsm_transition_request_subscription = self.create_subscription(UInt16, 'policy_fsm_transition_request', self.fsm_transition_request_callback, 10)
-        # > For subscribing to VL53L5CX ToF data
-        self.tof_subscription = self.create_subscription(TofSensor, 'tof_sensor_vl53l5cx', self.tof_callback, 10)
+        # > For subscribing to Wheel Speed data
+        self.wheel_speed_subscription = self.create_subscription(Float32, 'wheel_speed_m_per_sec', self.wheel_speed_callback, 10)
         # > For subscribing to IMU data
         self.imu_subscription = self.create_subscription(Imu, 'imu_sensor', self.imu_callback, 10)
+        # > For subscribing to 2D Lidar data
+        self.lidar_subscription = self.create_subscription(LaserScan, 'scan', self.lidar_callback, 10)
+        # > For subscribing to VL53L5CX ToF data
+        self.tof_subscription = self.create_subscription(TofSensor, 'tof_sensor_vl53l5cx', self.tof_callback, 10)
+
         # > Prevent unused variable warning
         self.cv_subscription
         self.fsm_transition_request_subscription
-        self.tof_subscription
+        self.wheel_speed_subscription
         self.imu_subscription
+        self.lidar_subscription
+        self.tof_subscription
+
+        # Initialize a class variable fro the most recent wheel speed measurement
+        self.wheel_speed_in_meters_per_second = 0.0
 
         # Initialize a class variable for the most recent heading angle measurement from the IMU
         self.heading_angle_from_imu = 0.0
@@ -95,6 +110,17 @@ class PolicyNode(Node):
         self.tof_sensor_id = 0
         self.tof_distance_array_meters = np.array([], dtype=np.float32)
         self.tof_status_array = np.array([], dtype=np.uint8)
+
+        # Initialize class variable for the 2D lidar data
+        self.lidar_angle_min = 0.0
+        self.lidar_angle_max = 0.0
+        self.lidar_angle_increment = 0.0
+        self.lidar_time_increment = 0.0
+        self.lidar_scan_time = 0.0
+        self.lidar_range_min = 0.0
+        self.lidar_range_max = 0.0
+        self.lidar_ranges = np.array([], dtype=np.float32)
+        self.lidar_intensities = np.array([], dtype=np.float32)
 
         # Initialize class variables related to transforming tof measurements to car frame
         self.tof_xyz_array_meters_in_tof_frame = np.array([], dtype=np.float32)
@@ -143,6 +169,9 @@ class PolicyNode(Node):
             y_coords = msg.y
             cone_colour = msg.c
 
+            # Extract the current wheel speed into a local variable
+            wheel_speed_in_meters_per_second = self.wheel_speed_in_meters_per_second
+
             # Extract the current heading angle into a local vairable
             heading_angle_in_radians = self.heading_angle_from_imu - self.heading_angle_for_tare
             # > "Unwrap" the angle to be between [-pi,pi]
@@ -155,6 +184,9 @@ class PolicyNode(Node):
             roll_angle_in_radians  = self.roll_angle_from_imu
             pitch_angle_in_radians = self.pitch_angle_from_imu
 
+            # Extract the current lidar scan into a local variable
+            lidar_ranges = self.lidar_ranges.copy()
+
             # Extract the tof measurements into local variables
             tof_usec_since_last_msg = self.tof_usec_since_last_msg
             tof_silicon_temp_degc = self.tof_silicon_temp_degc
@@ -163,11 +195,6 @@ class PolicyNode(Node):
             tof_status_array = self.tof_status_array.copy()
             tof_xyz_array_meters_in_tof_frame = self.tof_xyz_array_meters_in_tof_frame.copy()
             tof_xyz_array_meters_in_car_frame = self.tof_xyz_array_meters_in_car_frame.copy()
-
-            # Publish the heading angle
-            heading_msg = Float32()
-            heading_msg.data = heading_angle_in_radians * 180.0/np.pi
-            self.imu_heading_angle_publisher_.publish(heading_msg)
             
             # =======================================
             # START OF: INSERT POLICY CODE BELOW HERE
@@ -179,6 +206,18 @@ class PolicyNode(Node):
             #   - "x_coords" and "y_coords" give the x and y world coordinates of the cones respectively
             #   - "cone_colour" gives the colour of the cones (0 for yellow, 1 for blue)
             #   - A cone represents a single index of all three lists e.g. x_coords[i], y_coords[i], cone_colour[i] represent the ith cone
+
+            # > The "wheel_speed_in_meters_per_second" is:
+            #   - The wheel speed converted to a linear speed of the car.
+            #   - Always a positive value because the wheel encoder gives no information about direction.
+            #   - The wheeel speed is based on measure the "period" between ticks of the wheel encoder.
+            #   - The wheel encoder only has 16.32 ticks per revolution of the wheel.
+            #   - The low number is encoder ticks per revolution is relevant because is means that
+            #     at low speeds the encoder period can be 1 second (or higher), hence:
+            #     - The wheel speed estimator waits 3 seconds with no new encoder data before concluding
+            #       that the wheels have stopped.
+            #     - At low speed, new measurements come is at approximately half the encoder period,
+            #       hence, a policy for low-speed cruise-control must take this into account.
 
             # > The "heading_angle_in_radians" is:
             #   - The current heading angle of the car as measured by the IMU.
@@ -197,6 +236,21 @@ class PolicyNode(Node):
             #   - "Zero" angle corresponds to when the car body is flat relative to gravity.
             #   - Roll  is the angle about the positive x-axis of the car, which points forwards.
             #   - Pitch is the angle about the positive y-axis of the car, which points left.
+
+            # > The "lidar_ranges" is:
+            #   - An array of distance measurements from the 2D scanning lidar.
+            #   - The details of this message are best described by the LaserScan message format,
+            #     which is found here:
+            #       https://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/LaserScan.html
+            #   - The other properties described in that format are all available from self, i.e.:
+            #       self.lidar_angle_min
+            #       self.lidar_angle_max
+            #       self.lidar_angle_increment
+            #       self.lidar_time_increment
+            #       self.lidar_scan_time
+            #       self.lidar_range_min
+            #       self.lidar_range_max
+            #       self.lidar_intensities
 
             # > The collection of Time-of-Flight (ToF) measurements
             #   > "tof_usec_since_last_msg"
@@ -256,7 +310,7 @@ class PolicyNode(Node):
             ROAD_WIDTH = 1000           # Width of the Road (in mm)
             P_STEERING = 0.1            # P value for Steering Action
             STEER_OFFSET = 0           # Offset to adjust for biased steering
-            FIXED_ESC_VALUE = 33.0      # Fixed ESC value for steering tests
+            FIXED_ESC_VALUE = 25.0      # Fixed ESC value for steering tests
 
             yellow_line = False         # Flag to signal yellow line detection 
             blue_line = False           # Flag to signal blue line detection
@@ -265,63 +319,75 @@ class PolicyNode(Node):
             x_array = np.array(x_coords)
             y_array = np.array(y_coords)
             c_array = np.array(cone_colour)
-
-            # Create boolean masks based on c_np for yellow (0) and blue (1)
-            yellow_mask = (c_array == 0)
-            blue_mask = (c_array == 1)
-
-            # Filter co-ordinates based on color
-            bx = x_array[blue_mask]
-            by = y_array[blue_mask]
-            yx = x_array[yellow_mask]
-            yy = y_array[yellow_mask]
-
-            # Fit a line to yellow points if there are enough points (>=2 points)
-            if len(yx) > 1:
-                try:
-                    yellow_fit = np.polyfit(yx, yy, 1)  # Linear fit (y = mx + b)
-                    yellow_line = True
-                    #self.get_logger().info("Yellow line fit: gradient = " + str(yellow_fit[0]) + "y-intercept + " + str(yellow_fit[1]))
-                except:
-                    self.get_logger().info("Could not fit yellow line")
-            else:
-                self.get_logger().info("Not enough yellow cones detected")
-
-            # Fit a line to blue points if there are enough points
-            if len(bx) > 1:
-                try:
-                    blue_fit = np.polyfit(bx, by, 1)  # Linear fit (y = mx + b)
-                    blue_line = True
-                    #self.get_logger().info("Blue line fit: gradient = " + str(blue_fit[0]) + "y-intercept + " + str(blue_fit[1]))
-                except:
-                    self.get_logger().info("Could not fit blue line")
-            else:
-                self.get_logger().info("Not enough blue cones detected")
             
-            if yellow_line and blue_line:
-                # Average the coefficients of the yellow and blue lines
-                m = (yellow_fit[0] + blue_fit[0]) / 2
-                b = (yellow_fit[1] + blue_fit[1]) / 2
-            elif yellow_line:
-                m = yellow_fit[0]
-                b = yellow_fit[1] - ROAD_WIDTH / 2  # Offset calculation if only yellow line found
-            elif blue_line:
-                m = blue_fit[0]
-                b = blue_fit[1] + ROAD_WIDTH / 2    # Offset calculation if only blue line found
-            else:
-                m, b = False, False
-
-            if m and b:
+            middle_line = generate_middle_line(x_array, y_array, c_array)
+            coeffs = middle_line.coeffs
+            
+            if coeffs.any():
                 esc_action = FIXED_ESC_VALUE
-                distance_to_target_line = m * 0 + b
-                # Hack to guard against noise 
-                # if abs(distance_to_target_line) < 15:
-                #     distance_to_target_line = 0
+                distance_to_target_line = middle_line(100)
                 steering_action = P_STEERING * distance_to_target_line + STEER_OFFSET     # Steering Trim: 30
-                # self.get_logger().info(f"Steering action: {steering_action:.2f}")
+                self.get_logger().info(f"Steering action: {steering_action:.2f}")
             else:
                 self.get_logger().info("Could not fit any line")
                 esc_action = 0.0
+
+            # Create boolean masks based on c_np for yellow (0) and blue (1)
+            # yellow_mask = (c_array == 0)
+            # blue_mask = (c_array == 1)
+
+            # Filter co-ordinates based on color
+            # bx = x_array[blue_mask]
+            # by = y_array[blue_mask]
+            # yx = x_array[yellow_mask]
+            # yy = y_array[yellow_mask]
+
+            # Fit a line to yellow points if there are enough points (>=2 points)
+            # if len(yx) > 1:
+            #     try:
+            #         yellow_fit = np.polyfit(yx, yy, 1)  # Linear fit (y = mx + b)
+            #         yellow_line = True
+            #         #self.get_logger().info("Yellow line fit: gradient = " + str(yellow_fit[0]) + "y-intercept + " + str(yellow_fit[1]))
+            #     except:
+            #         self.get_logger().info("Could not fit yellow line")
+            # else:
+            #     self.get_logger().info("Not enough yellow cones detected")
+
+            # # Fit a line to blue points if there are enough points
+            # if len(bx) > 1:
+            #     try:
+            #         blue_fit = (bx, by, 1)  # Linear fit (y = mx + b)
+            #         blue_line = True
+            #         #self.get_logger().info("Blue line fit: gradient = " + str(blue_fit[0]) + "y-intercept + " + str(blue_fit[1]))
+            #     except:
+            #         self.get_logger().info("Could not fit blue line")
+            # else:
+            #     self.get_logger().info("Not enough blue cones detected")
+            
+            # if yellow_line and blue_line:
+            #     # Average the coefficients of the yellow and blue lines
+            #     m = (yellow_fit[0] + blue_fit[0]) / 2
+            #     b = (yellow_fit[1] + blue_fit[1]) / 2
+            # elif yellow_line:
+            #     m = yellow_fit[0]
+            #     b = yellow_fit[1] - ROAD_WIDTH / 2  # Offset calculation if only yellow line found
+            # elif blue_line:
+            #     m = blue_fit[0]
+            #     b = blue_fit[1] + ROAD_WIDTH / 2    # Offset calculation if only blue line found
+            # else:
+            #     m, b = False, False
+
+            # if m and b:
+            #     esc_action = FIXED_ESC_VALUE
+            #     distance_to_target_line = m * 0 + b
+            #     # Hack to guard against noise 
+            #     # if abs(distance_to_target_line) < 15:
+            #     #     distance_to_target_line = 0
+            #     steering_action = P_STEERING * distance_to_target_line + STEER_OFFSET     # Steering Trim: 30
+            #     # self.get_logger().info(f"Steering action: {steering_action:.2f}")
+            # else:
+            #     self.get_logger().info("Could not fit any line")
+            #     esc_action = 0.0
                 # LOGIC FOR TERMINATION
 
             # =====================================
@@ -383,20 +449,34 @@ class PolicyNode(Node):
 
         # Convert the FSM state to a string
         state_as_string = "Unknown state"
+        state_as_value = -1
 
         if (self.fsm_state == FSM_STATE_NOT_PUBLISHING_ACTIONS):
             state_as_string = "Not publishing any actions"
+            state_as_value = FSM_STATE_NOT_PUBLISHING_ACTIONS
         elif (self.fsm_state == FSM_STATE_PUBLISHING_POLICY_ACTION):
             state_as_string = "Publishing policy actions"
+            state_as_value = FSM_STATE_PUBLISHING_POLICY_ACTION
         elif (self.fsm_state == FSM_STATE_PUBLISHING_ZERO_ACTIONS):
             state_as_string = "Publishing zero actions"
+            state_as_value = FSM_STATE_PUBLISHING_ZERO_ACTIONS
 
-        # Prepare the message to send
-        msg = String()
-        msg.data = state_as_string
+        # Publish the state as a string
+        msg_string = String()
+        msg_string.data = state_as_string
+        self.fsm_state_string_publisher_.publish(msg_string)
 
-        # Publish the message
-        self.fsm_state_publisher_.publish(msg)
+        # Publish the state as a value
+        msg_value = Int8()
+        msg_value.data = state_as_value
+        self.fsm_state_value_publisher_.publish(msg_value)
+
+
+
+    # CALLBACK FUNCTION: for receiving IMU data
+    def wheel_speed_callback(self, msg):
+        # Extract the wheel speed into the class variable
+        self.wheel_speed_in_meters_per_second = msg.data
 
 
 
@@ -406,11 +486,40 @@ class PolicyNode(Node):
         self.heading_angle_from_imu = msg.yaw
         self.pitch_angle_from_imu   = msg.pitch
         self.roll_angle_from_imu    = msg.roll
+
         # Print for debugging
         #roll_deg  = np.degrees(msg.roll)
         #pitch_deg = np.degrees(msg.pitch)
         #yaw_deg   = np.degrees(msg.yaw)
         #self.get_logger().info(f"[POLICY NODE] IMU Callback received (r,p,y) = ( {roll_deg:4.0f}, {pitch_deg:4.0f}, {yaw_deg:4.0f})")
+
+        # Convert to the tared heading angle (and publish)
+        heading_angle_tared_in_radians = self.heading_angle_from_imu - self.heading_angle_for_tare
+        # > "Unwrap" the angle to be between [-pi,pi]
+        if (heading_angle_tared_in_radians > np.pi):
+            heading_angle_tared_in_radians -= 2.0*np.pi
+        if (heading_angle_tared_in_radians < -np.pi):
+            heading_angle_tared_in_radians += 2.0*np.pi
+        # Publish the tared heading angle
+        heading_msg = Float32()
+        heading_msg.data = heading_angle_tared_in_radians * 180.0/np.pi
+        self.imu_heading_angle_publisher_.publish(heading_msg)
+
+
+
+    def lidar_callback(self, msg):
+        # Extract the details and measurements
+        self.lidar_angle_min = msg.angle_min
+        self.lidar_angle_max = msg.angle_max
+        self.lidar_angle_increment = msg.angle_increment
+        self.lidar_time_increment = msg.time_increment
+        self.lidar_scan_time = msg.scan_time
+        self.lidar_range_min = msg.range_min
+        self.lidar_range_max = msg.range_max
+        # LaserScan sequences arrive as array.array objects; make plain copies for later use
+        self.lidar_ranges = list(msg.ranges)
+        self.lidar_intensities = list(msg.intensities)
+
 
     # CALLBACK FUNCTION: for receiving VL53L5CX ToF data
     def tof_callback(self, msg):
