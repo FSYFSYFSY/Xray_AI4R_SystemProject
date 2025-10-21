@@ -8,6 +8,10 @@ import numpy as np
 import time
 from types import SimpleNamespace
 
+import os
+import json
+from array import array
+
 
 import rclpy
 from rclpy.node import Node
@@ -23,8 +27,8 @@ from cv_bridge import CvBridge, CvBridgeError
 from std_msgs.msg import Empty, UInt8
 
 CAMERA_FPS = 10
-CAMERA_HEIGHT = 280    # mm
-CAMERA_ALPHA = 20      # degrees
+CAMERA_HEIGHT = 290    # mm
+CAMERA_ALPHA = 22      # degrees
 X_THRESHOLD = 4000     # mm ; only consider cones within 3m distance of the car
 Z_THRESHOLD = 100      # mm ; ignore detections with height > 10 cm ; likely misdetections/noise
 ENABLE_IRDOT = True     # Enables IR Dot Projection if True
@@ -384,6 +388,20 @@ class SpatialConeDetectorNode(Node):
         msg.y = data['y']
         msg.c = data['c']
         msg.n = data['n']
+
+        filename = os.path.join(os.getcwd(), "detection_results.json")
+        frame_data = {
+            "x_list": [float(x) for x in msg.x],
+            "y_list": [float(y) for y in msg.y],
+            "c_list": [int(c) for c in msg.c],
+            "n": int(msg.n)
+        }
+    
+
+        # Append JSON object as a line to the file
+        with open(filename, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(frame_data) + "\n")
+
         self.cone_publisher.publish(msg)
 
 
