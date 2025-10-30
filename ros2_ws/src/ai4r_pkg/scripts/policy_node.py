@@ -17,7 +17,7 @@ import tf2_ros
 import numpy as np
 
 # line predict
-from path_prediction import generate_middle_line
+from path_prediction import process_frame_and_update
 
 FSM_STATE_NOT_PUBLISHING_ACTIONS   = 1
 FSM_STATE_PUBLISHING_ZERO_ACTIONS  = 2
@@ -26,6 +26,13 @@ FSM_STATE_PUBLISHING_POLICY_ACTION = 3
 LIST_OF_FSM_STATES = [FSM_STATE_NOT_PUBLISHING_ACTIONS, FSM_STATE_PUBLISHING_ZERO_ACTIONS, FSM_STATE_PUBLISHING_POLICY_ACTION]
 
 NUMBER_OF_ZERO_CONE_DETECTIONS_BEFORE_ZERO_ACTIONS = 5
+
+Global_Map = {
+    "x_list": [],
+    "y_list": [],
+    "c_list": []
+}
+
 
 
 # Create a class which inherits from the rclpy Node class (hence a superset of “rclpy.node.Node”).
@@ -320,7 +327,7 @@ class PolicyNode(Node):
             y_array = np.array(y_coords)
             c_array = np.array(cone_colour)
             
-            middle_line = generate_middle_line(x_array, y_array, c_array)
+            middle_line, Global_Map = process_frame_and_update(x_array, y_array, c_array, Global_Map, 0, 1000)
             coeffs = middle_line.coeffs
             
             if coeffs.any():

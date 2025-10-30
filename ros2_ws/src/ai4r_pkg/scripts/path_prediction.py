@@ -249,6 +249,8 @@ def clean_single_far_point(frame, yellow_code=0, blue_code=1,
         frame['c_list'] = [int(v) for v in c[to_keep]]
     return removed_info
 
+
+# Main function to generate middle line polynomial
 def generate_middle_line(frame, degree=3, default_offset=500,
                          ridge=0.0, tail_boost=2.0):
     x_list = frame.get('x_list', [])
@@ -299,4 +301,42 @@ def generate_middle_line(frame, degree=3, default_offset=500,
                                        ridge=ridge, tail_boost=tail_boost)
     return handle_error_case()
 
+
+#The protocal of implementing the path prediction
+def process_frame_and_update(
+    x_array,
+    y_array,
+    c_array,
+    Global_Map,
+    heading_angle_in_radians = 0.0,
+    wheel_speed = 1000.0
+):
+    frame = {
+        "x_list": list(x_array),
+        "y_list": list(y_array),
+        "c_list": list(c_array),
+        "heading_angle_in_radians": heading_angle_in_radians,
+        "wheel_speed": wheel_speed
+    }
+
+    if is_empty_detection(frame):
+        return generate_middle_line(Global_Map), Global_Map
+
+    if is_empty_detection(Global_Map):
+        Global_Map = frame_to_map(frame)
+        return generate_middle_line(Global_Map), Global_Map
+
+    predicted_map = update_Cones_Map(heading_angle_in_radians, wheel_speed, Global_Map)
+
+    predicted_filtered = filter_x_range(predicted_map, x_min=0.0, x_max=750.0)
+
+    current_map = frame_to_map(frame)
+
+    fused_map = merge_maps(current_map, predicted_filtered)
+
+    poly_middle = generate_middle_line(fused_map)
+
+    Global_Map = fused_map
+
+    return poly_middle, Global_Map
         
